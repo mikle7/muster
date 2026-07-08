@@ -179,6 +179,43 @@ Consequences / details:
 - Inner-tmux escape hatches: outer copy-mode sees only the visible inner
   screen; real scrollback is `C-b C-b [`. Documented in `?` help.
 
+## Session 3 — spaces, menus, usage, and pipes-as-product
+
+- **Space = the folder you open.** `muster` resolves cwd → repo root,
+  auto-registers it, records it in `<state>/space` (re-pointed per launch
+  so re-running from another repo re-aims the UI). No config, no command.
+- **No path typing.** Project add = a picker over repos discovered one
+  level under `MUSTER_REPO_ROOTS` (sane defaults). Literal paths still
+  accepted in the same input.
+- **Right-click = tmux display-menu at the pointer.** Zero custom overlay
+  code; tmux does rendering, keyboard nav, dismissal. Menu items either
+  send ordinary sidebar keys back to the TUI pane (agent actions — the
+  click already selected the agent) or hidden F6/F7/F8 keys carrying
+  which project was clicked (menuProj). Splits pin EXTRA nested clients
+  beside the main pane — the multiplexed "watch several agents" view,
+  still zero PTY ownership.
+- **Usage via statusLine, not scraping.** The injected --settings now
+  registers `muster hook status-line`; Claude Code pushes
+  model/context%/rate-limits JSON on every update. Two files per session
+  (status.json = hooks, usage.json = statusline) so writers never race.
+  Settings regenerate at every launch — upgrades propagate silently.
+  (herdr has NO equivalent — verified by source read; its state detection
+  is screen pattern-matching only.)
+- **Team model.** Role lives in the spec; the mesh briefing (recomputed
+  each launch, never stored in Argv — resume stays faithful) tells each
+  agent its role, the current roster (names + roles), and the STANDUP
+  protocol. Standup deliberately has NO panel: it's a broadcast whose
+  replies are normal inbox traffic — the mesh view is the one surface for
+  team conversation. Proven live: dave asked alice by name and relayed
+  her answer; both delivered formatted standups in seconds.
+- **Pipes legibility.** `ppz status` has no --json (research: WIRE.md),
+  so the mesh view shows its text verbatim plus who --json (liveness ≠
+  agent_state — composed ourselves), reread'd mstrctl traffic, and
+  schedule ls. Mesh-off state doubles as onboarding: daemon start and
+  `ppz login pipescloud.io` run interactively IN the agent pane — the
+  workspace is its own setup terminal. ppzCmd always sets NO_COLOR +
+  PPZ_UPDATE_CHECK=0; ppzReady cached 10s (the TUI ticks 2s).
+
 ## Non-goals (MVP)
 
 - No Windows. No zellij backend (interface kept thin enough to add).

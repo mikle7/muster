@@ -18,7 +18,8 @@ import (
 // whole faithful-resume guarantee.
 type AgentSpec struct {
 	Name        string            `json:"name"`
-	Dir         string            `json:"dir"` // cwd the agent runs in
+	Role        string            `json:"role,omitempty"` // "reviewer", "game dev for pixel studios"
+	Dir         string            `json:"dir"`            // cwd the agent runs in
 	Repo        string            `json:"repo,omitempty"`
 	Worktree    string            `json:"worktree,omitempty"`
 	Branch      string            `json:"branch,omitempty"`
@@ -155,13 +156,41 @@ func stripFlag(argv []string, flag string) []string {
 
 // meshBriefing is appended to claude's system prompt (only when the agent
 // is on the ppz mesh) so ppz's built-in subs-alert nudge ("Please run
-// 'ppz subs read' and action messages") makes sense to the agent.
+// 'ppz subs read' and action messages") makes sense to the agent. It also
+// establishes the TEAM: who you are (role), who your teammates are, and the
+// standup ritual — recomputed at every launch/resume so the roster is fresh.
 func meshBriefing(s *AgentSpec) string {
-	return "You are agent '" + s.Name + "' in a muster-managed fleet, connected to the ppz message mesh " +
-		"(handle '" + s.PpzHandle + "', PPZ_SESSION preset). Other agents, schedules, and the user send you " +
-		"messages. When told to run 'ppz subs read', run it and act on every message it returns. " +
-		"Reply or message any agent with: ppz send <handle> '<text>' (64KiB cap — send pointers like " +
-		"branch/sha/path, not diffs). 'ppz who' lists live agents."
+	b := "You are agent '" + s.Name + "' on a muster-managed team, connected to the ppz message mesh " +
+		"(handle '" + s.PpzHandle + "', PPZ_SESSION preset)."
+	if s.Role != "" {
+		b += " Your role: " + s.Role + "."
+	}
+	if roster := teamRoster(s.Name); roster != "" {
+		b += " Teammates: " + roster + "."
+	}
+	b += " Message any teammate by name: ppz send <name> '<text>' (64KiB cap — send pointers like " +
+		"branch/sha/path, not diffs); 'ppz who' shows who's online. The user (and their control handle " +
+		"mstrctl) also messages you. When told to run 'ppz subs read', run it and act on every message, " +
+		"replying to senders by name. A message starting with STANDUP means: reply to its sender in under " +
+		"5 lines with your current task, progress, blockers, and what's next."
+	return b
+}
+
+// teamRoster lists the other agents (name + role) for the briefing.
+func teamRoster(self string) string {
+	specs, _ := listSpecs()
+	var parts []string
+	for _, o := range specs {
+		if o.Name == self || o.PpzHandle == "" {
+			continue
+		}
+		p := o.Name
+		if o.Role != "" {
+			p += " (" + o.Role + ")"
+		}
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // muster-injected flags, recomputed at every launch — never stored in Argv.

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -22,6 +24,93 @@ type AgentStatus struct {
 
 func statusPath(sessionUUID string) string {
 	return filepath.Join(statusDir(), sessionUUID+".json")
+}
+
+// AgentUsage is written by `muster hook status-line` (Claude Code statusLine
+// command) — model + context% per session, plus the account-wide 5h window.
+// Separate file from AgentStatus so the two writers never race.
+type AgentUsage struct {
+	Model       string    `json:"model,omitempty"` // display name ("Opus")
+	CtxPct      float64   `json:"ctx_pct"`
+	FiveHrPct   float64   `json:"five_hr_pct"` // 0 = unknown (API-key users)
+	FiveHrReset time.Time `json:"five_hr_reset,omitempty"`
+	TS          time.Time `json:"ts"`
+}
+
+func usagePath(sessionUUID string) string {
+	return filepath.Join(statusDir(), sessionUUID+".usage.json")
+}
+
+func loadUsage(sessionUUID string) *AgentUsage {
+	b, err := os.ReadFile(usagePath(sessionUUID))
+	if err != nil {
+		return nil
+	}
+	var u AgentUsage
+	if json.Unmarshal(b, &u) != nil {
+		return nil
+	}
+	return &u
+}
+
+// cmdStatusLine handles the statusLine invocations: persist usage for the
+// muster UI, and print the line claude displays inside the agent pane.
+// Like cmdHook, it must never fail loudly.
+func cmdStatusLine() int {
+	raw, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return 0
+	}
+	var p struct {
+		SessionID string `json:"session_id"`
+		Model     struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"model"`
+		ContextWindow struct {
+			UsedPercentage float64 `json:"used_percentage"`
+		} `json:"context_window"`
+		RateLimits struct {
+			FiveHour struct {
+				UsedPercentage float64 `json:"used_percentage"`
+				ResetsAt       int64   `json:"resets_at"`
+			} `json:"five_hour"`
+		} `json:"rate_limits"`
+	}
+	if json.Unmarshal(raw, &p) != nil || p.SessionID == "" {
+		return 0
+	}
+	model := p.Model.DisplayName
+	if model == "" {
+		model = p.Model.ID
+	}
+	u := AgentUsage{
+		Model:     model,
+		CtxPct:    p.ContextWindow.UsedPercentage,
+		FiveHrPct: p.RateLimits.FiveHour.UsedPercentage,
+		TS:        time.Now(),
+	}
+	if p.RateLimits.FiveHour.ResetsAt > 0 {
+		u.FiveHrReset = time.Unix(p.RateLimits.FiveHour.ResetsAt, 0)
+	}
+	if err := os.MkdirAll(statusDir(), 0o755); err == nil {
+		b, _ := json.Marshal(u)
+		_ = atomicWrite(usagePath(p.SessionID), b)
+	}
+	// the line claude renders at the bottom of the agent pane
+	line := model
+	if name := os.Getenv("MUSTER_AGENT"); name != "" {
+		line = "\033[35m" + name + "\033[0m · " + line
+	}
+	line += fmt.Sprintf(" · ctx %d%%", int(u.CtxPct))
+	if u.FiveHrPct > 0 {
+		line += fmt.Sprintf(" · 5h %d%%", int(u.FiveHrPct))
+		if !u.FiveHrReset.IsZero() {
+			line += " → " + u.FiveHrReset.Local().Format("15:04")
+		}
+	}
+	fmt.Println(line)
+	return 0
 }
 
 func loadStatus(sessionUUID string) *AgentStatus {
@@ -60,6 +149,9 @@ func hookEventState(event, notifMessage string) (state, reason string) {
 // status file. Registered for every event in the muster hooks settings.
 // Must never fail loudly — a broken status write must not break the agent.
 func cmdHook(args []string) int {
+	if len(args) > 0 && args[0] == "status-line" {
+		return cmdStatusLine()
+	}
 	raw, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return 0
@@ -76,6 +168,7 @@ func cmdHook(args []string) int {
 	if state == "" {
 		return 0
 	}
+	prev := loadStatus(payload.SessionID)
 	st := AgentStatus{
 		State: state, Event: payload.HookEventName, Reason: reason,
 		SessionID: payload.SessionID, TS: time.Now(),
@@ -85,7 +178,39 @@ func cmdHook(args []string) int {
 	}
 	b, _ := json.Marshal(st)
 	_ = atomicWrite(statusPath(payload.SessionID), b)
+	// desktop nudge on the transition INTO blocked — you're often not
+	// looking at the workspace when an agent stalls on a permission
+	if state == "blocked" && (prev == nil || prev.State != "blocked") {
+		notifyBlocked(payload.SessionID, reason)
+	}
 	return 0
+}
+
+// notifyBlocked posts a macOS notification naming the blocked agent.
+// MUSTER_NOTIFY=0 disables. Best-effort by design.
+func notifyBlocked(sessionUUID, reason string) {
+	if os.Getenv("MUSTER_NOTIFY") == "0" || runtime.GOOS != "darwin" {
+		return
+	}
+	name := os.Getenv("MUSTER_AGENT") // set in every muster tmux session
+	if name == "" {
+		if specs, _ := listSpecs(); specs != nil {
+			for _, s := range specs {
+				if s.SessionUUID == sessionUUID {
+					name = s.Name
+					break
+				}
+			}
+		}
+	}
+	if name == "" {
+		name = "an agent"
+	}
+	if reason == "" {
+		reason = "waiting for input"
+	}
+	script := fmt.Sprintf("display notification %q with title %q", reason, "muster: "+name+" needs you")
+	_ = exec.Command("osascript", "-e", script).Start()
 }
 
 // hooksSettingsPath is the settings file passed to claude via --settings.
@@ -120,6 +245,11 @@ func writeHooksSettings() (string, error) {
 			"Notification":      hook,
 			"Stop":              hook,
 			"SessionEnd":        hook,
+		},
+		// feeds model/context%/5h-window to the muster UI and renders the
+		// agent's own status line
+		"statusLine": map[string]any{
+			"type": "command", "command": shQuote(exe) + " hook status-line", "padding": 0,
 		},
 	}
 	b, err := json.MarshalIndent(settings, "", "  ")

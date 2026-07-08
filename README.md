@@ -77,14 +77,27 @@ $ claude --dangerously-skip-perm…  │
  a spawn · P project · enter type  │
 ```
 
-The sidebar groups agents by **project** (registered repos — `[+ project]`
-or `muster project add`). `[+ agent]` (or `a`) opens a spawn form: name,
-project, optional branch — a branch gets its own git worktree, so parallel
-tasks on one repo never collide. Every pipes command is still a keystroke —
-no ppz syntax to remember: `s` send, `b` broadcast, `i` peek inbox, `c`
-schedule, `C` list schedules, `enter` on a dead agent resumes it with its
-exact original command. `d` leaves the workspace running; `q` quits it
-(agents keep running either way).
+The folder you run `muster` in is your **space** — auto-registered, pinned
+to the top with a ●, preselected in spawn forms. More projects come from a
+repo **picker** (`P` — it finds git repos under `~/Repos`, `~/code`, … —
+type to filter, click to add; no path typing). **Right-click** an agent
+for split right/down/left (pin several live agents side by side), zoom,
+message, kill; right-click a project for "new agent" / "new worktree
+agent". Agents show their **model and context%** in place, and the header
+carries your account's **5h rate-limit window** — fed by Claude Code's own
+statusline, not scraping.
+
+Agents are a **team**: give each a name and a role (`alice — manages the
+admin backoffice`, `peter — reviews every PR`). Every agent's briefing
+includes its role and the current roster, so "ask alice to check the
+migration" just works — agents message each other **by name** over pipes
+(`ppz send alice '…'`), and `T` runs a standup: every agent reports task /
+progress / blockers / next in seconds. `M` opens the pipes view — mesh
+status, who's online, recent team messages, schedules — and doubles as a
+guided connect screen when pipes isn't set up (login runs right in the
+agent pane). Every pipes command stays a keystroke: `s` send, `b`
+broadcast, `i` inbox, `c`/`C` schedules. `d` leaves the workspace running;
+`q` quits it (agents keep running either way).
 
 Under the hood the right pane is a nested tmux client on the same server
 (`switch-client` retargets it as you move the selection) — muster still
@@ -94,7 +107,8 @@ never owns a PTY, and your tmux config is untouched.
 
 | | |
 |---|---|
-| `spawn <name> [-C dir \| --repo dir -b branch] [--] [cmd…]` | start an agent (worktree per branch, `.worktreeinclude` copied) |
+| `spawn <name> [--role txt] [-C dir \| --repo dir -b branch] [--] [cmd…]` | start an agent (worktree per branch, `.worktreeinclude` copied) |
+| `standup` | every agent reports task/progress/blockers/next to your inbox |
 | `ls [--json] [--watch]` | fleet status: ⚙ working ✋ blocked ✔ idle ☠ dead |
 | `attach <name>` / `menu` | jump to an agent / tmux popup picker |
 | `resume <name> \| --all` | restart dead agents exactly as launched |

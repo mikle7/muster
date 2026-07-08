@@ -14,7 +14,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
 
   (no command)            open the muster UI
 
-  spawn <name> [-C dir | --repo dir -b branch] [-e K=V]... [--] [cmd...]
+  spawn <name> [--role txt] [-C dir | --repo dir -b branch] [-e K=V]... [--] [cmd...]
                           start an agent (default cmd: $MUSTER_DEFAULT_CMD or claude)
   ls [--json] [--watch]   every agent: state, unread, age
   attach <name>           go to an agent (switch-client inside tmux)
@@ -25,6 +25,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
 
   send <name> <text>      message an agent over ppz (delivered when idle)
   broadcast <text>        message all live agents
+  standup                 ask every agent for status — replies collect in the UI (T)
   inbox <name>            peek an agent's inbox (no cursor move)
   cron add <name> (--every 4h|--cron "0 9 * * 1"|--at +10m) <prompt>
   cron ls | rm <id>       durable server-side schedules (fire while you sleep)
@@ -44,7 +45,7 @@ func main() {
 		"ui": cmdTUI, "spawn": cmdSpawn, "ls": cmdLs, "attach": cmdAttach, "menu": cmdMenu,
 		"resume": cmdResume, "kill": cmdKill,
 		"send": cmdSend, "broadcast": cmdBroadcast, "inbox": cmdInbox,
-		"cron": cmdCron, "project": cmdProject,
+		"cron": cmdCron, "project": cmdProject, "standup": cmdStandup,
 		"init": cmdInit, "doctor": cmdDoctor, "hook": cmdHook,
 	}
 	if os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h" {

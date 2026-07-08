@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +58,8 @@ func stateStyle(state string) lipgloss.Style {
 type tickMsg struct {
 	rows     []lsRow
 	projects []Project
+	space    string
+	mesh     bool
 	seq      int
 }
 type execDoneMsg struct {
@@ -62,12 +67,18 @@ type execDoneMsg struct {
 	out   string
 	err   error
 }
+type meshMsg struct{ body string }
 
 func refreshCmd(seq int) tea.Cmd {
 	return func() tea.Msg {
 		rows, _ := gatherRows()
-		return tickMsg{rows: rows, projects: loadProjects(), seq: seq}
+		return tickMsg{rows: rows, projects: loadProjects(), space: currentSpace(), mesh: ppzReady(), seq: seq}
 	}
+}
+
+// meshCmd assembles the mesh view body (subprocess-heavy — runs async).
+func meshCmd() tea.Cmd {
+	return func() tea.Msg { return meshMsg{body: meshBody()} }
 }
 
 func runSelf(label string, argv ...string) tea.Cmd {
@@ -90,12 +101,57 @@ type sideItem struct {
 	row      lsRow // agent
 }
 
-func buildItems(rows []lsRow, projects []Project) []sideItem {
+// stateRank orders agents by how much they need you (herdr's priority sort).
+func stateRank(state string) int {
+	switch state {
+	case "blocked":
+		return 0
+	case "working":
+		return 1
+	case "idle":
+		return 2
+	case "dead", "ended":
+		return 4
+	}
+	return 3
+}
+
+// buildPriorityItems: flat list, most attention-worthy first — for triage
+// when the fleet is big.
+func buildPriorityItems(rows []lsRow) []sideItem {
+	sorted := append([]lsRow(nil), rows...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if a, b := stateRank(sorted[i].State), stateRank(sorted[j].State); a != b {
+			return a < b
+		}
+		return sorted[i].Unread > sorted[j].Unread
+	})
+	items := make([]sideItem, len(sorted))
+	for i, r := range sorted {
+		items[i] = sideItem{kind: "agent", row: r}
+	}
+	return items
+}
+
+func buildItems(rows []lsRow, projects []Project, space string) []sideItem {
 	byProj := map[string][]lsRow{}
 	for _, r := range rows {
 		p := projectFor(projects, r)
 		byProj[p] = append(byProj[p], r)
 	}
+	// the current space floats to the top
+	ordered := make([]Project, 0, len(projects))
+	for _, p := range projects {
+		if p.Path == space {
+			ordered = append(ordered, p)
+		}
+	}
+	for _, p := range projects {
+		if p.Path != space {
+			ordered = append(ordered, p)
+		}
+	}
+	projects = ordered
 	var items []sideItem
 	for _, p := range projects {
 		items = append(items, sideItem{kind: "proj", projName: p.Name, projPath: p.Path})
@@ -156,7 +212,7 @@ func (f *uiForm) val(i int) string {
 	return strings.TrimSpace(f.fields[i].ti.Value())
 }
 
-func newSpawnForm(projects []Project, preselect string) *uiForm {
+func newSpawnForm(projects []Project, preselect, branch string) *uiForm {
 	sel := []string{"(none — spawn in cwd)"}
 	ix := 0
 	for i, p := range projects {
@@ -166,22 +222,54 @@ func newSpawnForm(projects []Project, preselect string) *uiForm {
 		}
 	}
 	f := &uiForm{kind: "spawn", title: "new agent", fields: []ffield{
-		textField("name", "e.g. fixer", "lowercase, digits, dashes"),
+		textField("name", "e.g. alice", "lowercase, digits, dashes"),
+		textField("role", "e.g. reviews every PR", "their charter — teammates learn it"),
 		{label: "project", sel: sel, selIx: ix, hint: "←/→ to change"},
 		textField("branch", "(optional)", "creates a git worktree for it"),
 		textField("command", "claude (default)", "the agent's exact command"),
 	}}
+	if branch != "" {
+		f.fields[3].ti.SetValue(branch)
+	}
 	f.setFocus(0)
 	return f
 }
 
-func newProjectForm() *uiForm {
-	f := &uiForm{kind: "project", title: "add project", fields: []ffield{
-		textField("path", "~/Repos/my-app", "repo or directory"),
-		textField("name", "(basename)", "shown in the sidebar"),
-	}}
-	f.setFocus(0)
-	return f
+// openPicker enters project-picker mode: discovered repos, filter-as-you-type.
+func (m *tuiModel) openPicker() {
+	m.mode = "pick"
+	m.pickRepos = discoverRepos(m.projects)
+	m.pickSel = 0
+	m.pickInput = textinput.New()
+	m.pickInput.Placeholder = "type to filter · or paste a path"
+	m.pickInput.Width = sidebarW - 6
+	m.pickInput.Focus()
+}
+
+func (m *tuiModel) pickFiltered() []string {
+	q := strings.ToLower(strings.TrimSpace(m.pickInput.Value()))
+	if q == "" {
+		return m.pickRepos
+	}
+	var out []string
+	for _, r := range m.pickRepos {
+		if strings.Contains(strings.ToLower(collapseHome(r)), q) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// pickChoice resolves the submission: a literal path beats the list.
+func (m *tuiModel) pickChoice() string {
+	if v := strings.TrimSpace(m.pickInput.Value()); strings.HasPrefix(v, "/") || strings.HasPrefix(v, "~") {
+		return v
+	}
+	f := m.pickFiltered()
+	if m.pickSel >= 0 && m.pickSel < len(f) {
+		return f[m.pickSel]
+	}
+	return ""
 }
 
 // ---- model ------------------------------------------------------------------
@@ -195,10 +283,23 @@ type promptSpec struct {
 type tuiModel struct {
 	rows     []lsRow
 	projects []Project
+	space    string
+	meshOK   bool
 	items    []sideItem
 	selName  string
 	scroll   int
 	w, h     int
+	byPrio   bool // o: sort by attention instead of project
+
+	// context-menu target (set on right-click; consumed by F6/F7/F8,
+	// which tmux display-menu items send back to this pane)
+	menuProj     string
+	menuProjPath string
+
+	// project picker (mode "pick")
+	pickInput textinput.Model
+	pickRepos []string // discovered, unregistered
+	pickSel   int
 
 	wp workspacePanes
 
@@ -225,6 +326,26 @@ func newTUI() tuiModel {
 
 func (m tuiModel) Init() tea.Cmd {
 	return tea.Batch(refreshCmd(0), tickEvery())
+}
+
+// spaceProject names the registered project matching the current space.
+func (m *tuiModel) spaceProject() string {
+	for _, p := range m.projects {
+		if p.Path == m.space {
+			return p.Name
+		}
+	}
+	return ""
+}
+
+// spawnPreselect: the selected agent's project, else the current space.
+func (m *tuiModel) spawnPreselect() string {
+	if r := m.selected(); r != nil {
+		if p := projectFor(m.projects, *r); p != "" {
+			return p
+		}
+	}
+	return m.spaceProject()
 }
 
 // selected returns the selected agent row, or nil.
@@ -295,7 +416,11 @@ func (m *tuiModel) retarget() {
 }
 
 func (m *tuiModel) rebuild() {
-	m.items = buildItems(m.rows, m.projects)
+	if m.byPrio {
+		m.items = buildPriorityItems(m.rows)
+	} else {
+		m.items = buildItems(m.rows, m.projects, m.space)
+	}
 	ring := m.agentIdxs()
 	if m.pendingSelect != "" {
 		for _, idx := range ring {
@@ -357,8 +482,17 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq != m.seq { // stale refresh
 			return m, nil
 		}
-		m.rows, m.projects = msg.rows, msg.projects
+		m.rows, m.projects, m.space, m.meshOK = msg.rows, msg.projects, msg.space, msg.mesh
 		m.rebuild()
+		if m.mode == "mesh" { // keep the mesh view live (standup replies etc.)
+			return m, meshCmd()
+		}
+		return m, nil
+
+	case meshMsg:
+		if m.mode == "mesh" {
+			m.viewBody = msg.body
+		}
 		return m, nil
 
 	case execDoneMsg:
@@ -385,12 +519,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePrompt(msg)
 		case "form":
 			return m.updateForm(msg)
+		case "pick":
+			return m.updatePick(msg)
 		case "view":
 			switch msg.String() {
 			case "esc", "q", "enter":
 				m.mode = "normal"
 			}
 			return m, nil
+		case "mesh":
+			return m.updateMesh(msg)
 		}
 		return m.updateNormal(msg)
 	}
@@ -413,7 +551,19 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonRight && m.mode == "normal" {
+		return m.rightClick(msg)
+	}
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft || m.mode == "view" {
+		return m, nil
+	}
+	if m.mode == "pick" {
+		// click a repo row = choose it
+		if i := m.pickRowAt(msg.Y); i >= 0 {
+			m.pickSel = i
+			m.mode = "normal"
+			return m, runSelf("project add", "project", "add", m.pickFiltered()[i])
+		}
 		return m, nil
 	}
 	if m.mode == "form" {
@@ -422,6 +572,13 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.form.setFocus(i)
 		}
 		return m, nil
+	}
+	// title line = the pipes summary; clicking it opens the mesh view
+	if msg.Y == 0 {
+		m.mode = "mesh"
+		m.viewTitle = "pipes"
+		m.viewBody = "…"
+		return m, meshCmd()
 	}
 	// list rows
 	if y := msg.Y - m.listTop(); y >= 0 && y < m.listH() {
@@ -432,7 +589,7 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.selName = it.row.Name
 				m.retarget()
 			case "proj":
-				m.form = newSpawnForm(m.projects, it.projName)
+				m.form = newSpawnForm(m.projects, it.projName, "")
 				m.mode = "form"
 			}
 		}
@@ -442,17 +599,103 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Y == m.btnY() {
 		switch hitButton(msg.X) {
 		case "agent":
-			r := m.selected()
-			pre := ""
-			if r != nil {
-				pre = projectFor(m.projects, *r)
-			}
-			m.form = newSpawnForm(m.projects, pre)
+			m.form = newSpawnForm(m.projects, m.spawnPreselect(), "")
 			m.mode = "form"
 		case "project":
-			m.form = newProjectForm()
-			m.mode = "form"
+			m.openPicker()
 		}
+	}
+	return m, nil
+}
+
+// rightClick opens a tmux display-menu for the item under the pointer.
+// Agent actions reuse plain sidebar keys (the click also selects the agent,
+// so send-keys s/K/enter act on it); project actions need the clicked
+// project, carried in menuProj and consumed by F6/F7/F8.
+func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	y := msg.Y - m.listTop()
+	if y < 0 || y >= m.listH() {
+		return m, nil
+	}
+	idx := m.scroll + y
+	if idx < 0 || idx >= len(m.items) {
+		return m, nil
+	}
+	// menu coordinates: window-absolute; +1 for the pane-border title row
+	mx, my := strconv.Itoa(msg.X), strconv.Itoa(msg.Y+2)
+	self := "send-keys -t " + m.wp.left + " "
+	switch it := m.items[idx]; it.kind {
+	case "agent":
+		m.selName = it.row.Name
+		m.retarget()
+		menu := []string{"display-menu", "-T", " " + it.row.Name + " ", "-x", mx, "-y", my}
+		if it.row.State == "dead" {
+			menu = append(menu,
+				"resume", "r", self+"r",
+				"kill / remove…", "k", self+"K")
+		} else {
+			menu = append(menu, "type into agent", "t", self+"Enter")
+			if m.wp.right != "" {
+				menu = append(menu,
+					"split right", "l", "split-window -h -d -t "+m.wp.right+" "+shQuote(attachCmd(it.row.Tmux)),
+					"split down", "j", "split-window -v -d -t "+m.wp.right+" "+shQuote(attachCmd(it.row.Tmux)),
+					"split left", "h", "split-window -h -b -d -t "+m.wp.right+" "+shQuote(attachCmd(it.row.Tmux)),
+					"zoom", "z", "resize-pane -Z -t "+m.wp.right,
+					"", "", "")
+			}
+			menu = append(menu,
+				"send message…", "s", self+"s",
+				"schedule…", "c", self+"c",
+				"inbox", "i", self+"i",
+				"kill…", "k", self+"K")
+		}
+		_, _ = tmuxRun(menu...)
+		return m, nil
+	case "proj":
+		m.menuProj, m.menuProjPath = it.projName, it.projPath
+		title := it.projName
+		if title == "" {
+			title = "unassigned"
+		}
+		menu := []string{"display-menu", "-T", " " + title + " ", "-x", mx, "-y", my,
+			"new agent…", "a", self + "F6",
+			"new worktree agent…", "w", self + "F7"}
+		if it.projName != "" {
+			menu = append(menu, "", "", "", "remove from sidebar", "x", self+"F8")
+		}
+		_, _ = tmuxRun(menu...)
+		return m, nil
+	}
+	return m, nil
+}
+
+// updateMesh handles keys inside the mesh view: the connect actions when
+// pipes is off, esc/q/M to close.
+func (m tuiModel) updateMesh(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "M":
+		m.mode = "normal"
+		return m, nil
+	case "1":
+		if !m.meshOK {
+			m.status, m.statErr = "starting ppz daemon…", false
+			return m, func() tea.Msg {
+				out, err := ppzCmd(ctlSession, "daemon", "start").CombinedOutput()
+				return execDoneMsg{label: "daemon start", out: strings.TrimSpace(string(out)), err: err}
+			}
+		}
+	case "2":
+		if !m.meshOK {
+			then := ""
+			if r := m.selected(); r != nil && r.State != "dead" {
+				then = r.Tmux
+			}
+			m.wp.runSetup(shQuote(ppzBin())+" login pipescloud.io", then)
+			m.status, m.statErr = "login running in the agent pane →", false
+			return m, nil
+		}
+	case "T":
+		return m, runSelf("standup", "standup")
 	}
 	return m, nil
 }
@@ -512,13 +755,44 @@ func (m tuiModel) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m tuiModel) updatePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = "normal"
+		m.status, m.statErr = "cancelled", false
+		return m, nil
+	case "up", "shift+tab":
+		if m.pickSel > 0 {
+			m.pickSel--
+		}
+		return m, nil
+	case "down", "tab":
+		if m.pickSel < len(m.pickFiltered())-1 {
+			m.pickSel++
+		}
+		return m, nil
+	case "enter":
+		path := m.pickChoice()
+		if path == "" {
+			m.status, m.statErr = "nothing to add — type a path or pick a repo", true
+			return m, nil
+		}
+		m.mode = "normal"
+		return m, runSelf("project add", "project", "add", path)
+	}
+	var cmd tea.Cmd
+	m.pickInput, cmd = m.pickInput.Update(msg)
+	m.pickSel = 0 // filter changed → selection back to top
+	return m, cmd
+}
+
 func (m tuiModel) submitForm() (tea.Model, tea.Cmd) {
 	f := m.form
 	switch f.kind {
 	case "spawn":
-		name, branch, cmdline := f.val(0), f.val(2), f.val(3)
+		name, role, branch, cmdline := f.val(0), f.val(1), f.val(3), f.val(4)
 		projPath := ""
-		if ix := f.fields[1].selIx; ix > 0 {
+		if ix := f.fields[2].selIx; ix > 0 {
 			projPath = m.projects[ix-1].Path
 		}
 		if err := validName(name); err != nil {
@@ -530,6 +804,9 @@ func (m tuiModel) submitForm() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		argv := []string{"spawn", name}
+		if role != "" {
+			argv = append(argv, "--role", role)
+		}
 		switch {
 		case branch != "":
 			argv = append(argv, "--repo", projPath, "-b", branch)
@@ -544,18 +821,6 @@ func (m tuiModel) submitForm() (tea.Model, tea.Cmd) {
 		m.pendingSelect = name
 		m.status, m.statErr = "spawning "+name+"…", false
 		return m, runSelf("spawn", argv...)
-	case "project":
-		path, name := f.val(0), f.val(1)
-		if path == "" {
-			m.status, m.statErr = "path is required", true
-			return m, nil
-		}
-		argv := []string{"project", "add", path}
-		if name != "" {
-			argv = append(argv, "--name", name)
-		}
-		m.mode = "normal"
-		return m, runSelf("project add", argv...)
 	}
 	m.mode = "normal"
 	return m, nil
@@ -597,6 +862,16 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.seq++
 		return m, refreshCmd(m.seq)
 
+	case "o":
+		m.byPrio = !m.byPrio
+		m.rebuild()
+		if m.byPrio {
+			m.status, m.statErr = "sorted by attention (blocked first) — o restores projects", false
+		} else {
+			m.status, m.statErr = "grouped by project", false
+		}
+		return m, nil
+
 	case "enter", "l", "tab":
 		if sel == nil {
 			return m, nil
@@ -626,17 +901,31 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "S", "a":
-		pre := ""
-		if sel != nil {
-			pre = projectFor(m.projects, *sel)
-		}
-		m.form = newSpawnForm(m.projects, pre)
+		m.form = newSpawnForm(m.projects, m.spawnPreselect(), "")
 		m.mode = "form"
 		return m, nil
 
-	case "P":
-		m.form = newProjectForm()
+	case "z":
+		m.wp.zoom()
+		return m, nil
+
+	// F6/F7/F8 arrive from right-click display-menu items (see rightClick)
+	case "f6":
+		m.form = newSpawnForm(m.projects, m.menuProj, "")
 		m.mode = "form"
+		return m, nil
+	case "f7":
+		m.form = newSpawnForm(m.projects, m.menuProj, "wt-"+newUUID()[:4])
+		m.mode = "form"
+		return m, nil
+	case "f8":
+		if m.menuProj != "" {
+			return m, runSelf("project rm", "project", "rm", m.menuProj)
+		}
+		return m, nil
+
+	case "P":
+		m.openPicker()
 		return m, nil
 
 	case "c":
@@ -654,6 +943,15 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "C":
 		return m, runSelf("cron ls", "cron", "ls")
+
+	case "M":
+		m.mode = "mesh"
+		m.viewTitle = "pipes"
+		m.viewBody = "…"
+		return m, meshCmd()
+
+	case "T":
+		return m, runSelf("standup", "standup")
 
 	case "i":
 		if name == "" {
@@ -704,12 +1002,16 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 const helpText = `sidebar
  j/k ↑/↓  select agent
  enter/l  type into the agent →
- S or a   spawn (form)
- P        add project
+ a / S    spawn (form)  P add project
+ right-click  agent/project menu
+ z        zoom agent pane (C-b z back)
  s / b    send msg / broadcast
+ T        standup — all agents report
+ M        pipes: team, messages, setup
  K        kill (y / y --rm)
  r / R    resume sel / all
  i        inbox   c/C schedule/list
+ o        sort: attention ⇄ projects
  g        refresh
  d        leave (fleet keeps running)
  q        quit workspace
@@ -749,12 +1051,25 @@ func (m tuiModel) View() string {
 	if m.w == 0 {
 		return "loading…"
 	}
-	title := sTitle.Render(" muster ") + sDim.Render(fmt.Sprintf("%d agents · mesh %s", len(m.rows), meshWord()))
+	mesh := "pipes off"
+	if m.meshOK {
+		mesh = "pipes ok"
+	}
+	info := fmt.Sprintf("%d · %s", len(m.rows), mesh)
+	if p, end := m.fiveHr(); p > 0 { // account-wide, freshest agent wins
+		info += fmt.Sprintf(" · 5h %d%%", int(p))
+		if end != "" {
+			info += "→" + end
+		}
+	}
+	title := sTitle.Render(" muster ") + sDim.Render(info)
 	var mid string
 	switch m.mode {
 	case "form":
 		mid = m.viewForm()
-	case "view":
+	case "pick":
+		mid = m.viewPick()
+	case "view", "mesh":
 		mid = m.viewScroll()
 	default:
 		mid = m.viewList() + "\n" + m.viewDetail() + "\n" + m.viewButtons()
@@ -762,19 +1077,103 @@ func (m tuiModel) View() string {
 	return title + "\n" + mid + "\n" + m.viewBottom()
 }
 
-var meshOK *bool
+// meshBody renders the pipes view: status, team presence, recent traffic,
+// schedules — the whole mesh legible at a glance. When the mesh is off it
+// becomes the guided connect screen instead.
+func meshBody() string {
+	if !ppzReady() {
+		return `pipes is OFF.
 
-// meshWord caches ppzReady for the process lifetime — the TUI hits View
-// often and ppz status is a subprocess call.
-func meshWord() string {
-	if meshOK == nil {
-		v := ppzReady()
-		meshOK = &v
+agents still run fine — but they can't
+message each other, no schedules fire,
+and standup/broadcast are offline.
+
+pipes gives your team a mesh: agents
+message each other BY NAME, you
+schedule prompts that fire server-side
+even while this machine sleeps.
+
+connect:
+ [1]  start the local daemon
+ [2]  log in to pipescloud.io
+      (interactive, runs in the
+       agent pane on the right)
+
+self-hosting? see ppz docs/self-hosting`
 	}
-	if *meshOK {
-		return "ok"
+	var b strings.Builder
+	b.WriteString(ppzStatusText() + "\n")
+
+	b.WriteString("\n" + sProj.Render("team") + "\n")
+	specs, _ := listSpecs()
+	ours := map[string]string{} // handle → role
+	for _, s := range specs {
+		if s.PpzHandle != "" {
+			ours[s.PpzHandle] = s.Role
+		}
 	}
-	return "off"
+	who := ppzWho()
+	if len(who) == 0 {
+		b.WriteString(sDim.Render(" nobody on the mesh yet") + "\n")
+	}
+	handles := make([]string, 0, len(who))
+	for h := range who {
+		handles = append(handles, h)
+	}
+	sort.Strings(handles)
+	for _, h := range handles {
+		hb := who[h]
+		state := hb.Status
+		if hb.State != "" {
+			state += "·" + hb.State
+		}
+		line := fmt.Sprintf(" %-12s %-14s", clip(h, 12), state)
+		if role := ours[h]; role != "" {
+			line += clip(role, sidebarW-len([]rune(line))-2)
+		} else if _, mine := ours[h]; !mine {
+			line += "·ext" // on the mesh, but not one of muster's agents
+		}
+		b.WriteString(clip(line, sidebarW-2) + "\n")
+	}
+
+	b.WriteString("\n" + sProj.Render("recent messages → you (mstrctl)") + "\n")
+	msgs := ppzReread(ctlHandle+".inbox", "6h")
+	shown := 0
+	for i := len(msgs) - 1; i >= 0 && shown < 8; i-- {
+		e := msgs[i]
+		if e.Subject == "ack:read" || e.Sender == "" {
+			continue
+		}
+		ts := ""
+		if t, err := time.Parse(time.RFC3339, e.CreatedAt); err == nil {
+			ts = t.Local().Format("15:04")
+		}
+		b.WriteString(clip(fmt.Sprintf(" %s %s: %s", ts, e.Sender, firstLine(e.Payload)), sidebarW-2) + "\n")
+		shown++
+	}
+	if shown == 0 {
+		b.WriteString(sDim.Render(" none in the last 6h — try T (standup)") + "\n")
+	}
+
+	b.WriteString("\n" + sProj.Render("schedules") + "\n")
+	sch := ppzScheduleText()
+	if sch == "" || strings.HasPrefix(sch, "ID") && strings.Count(sch, "\n") == 0 {
+		sch = sDim.Render(" none — c on an agent creates one")
+	}
+	b.WriteString(sch + "\n")
+	b.WriteString("\n" + sDim.Render("msgs cap 64KiB · history 24h · T standup"))
+	return b.String()
+}
+
+// fiveHr returns the account-wide 5h rate-limit window from whichever agent
+// reported it (it's per account, not per agent — any reporter is fine).
+func (m tuiModel) fiveHr() (pct float64, end string) {
+	for _, r := range m.rows {
+		if r.FivePct > pct {
+			pct, end = r.FivePct, r.FiveEnd
+		}
+	}
+	return
 }
 
 func (m tuiModel) viewList() string {
@@ -800,31 +1199,47 @@ func (m tuiModel) renderItem(i int) string {
 		if name == "" {
 			name = "unassigned"
 		}
-		label := clip(name, w-6)
+		label := clip(name, w-8)
+		mark := ""
+		if it.projPath != "" && it.projPath == m.space {
+			mark = " " + sStatus.Render("●") // the space you opened muster in
+		}
 		pad := w - len([]rune(label)) - 4
+		if mark != "" {
+			pad -= 2
+		}
 		if pad < 1 {
 			pad = 1
 		}
-		return sProj.Render("▍"+label) + strings.Repeat(" ", pad) + sDim.Render("+")
+		return sProj.Render("▍"+label) + mark + strings.Repeat(" ", pad) + sDim.Render("+")
 	}
 	r := it.row
 	glyph := stateGlyph(r.State)
-	name := clip(r.Name, 16)
+	name := clip(r.Name, 13)
 	unread := ""
 	if r.Unread > 0 {
 		unread = fmt.Sprintf("✉%d", r.Unread)
 	}
-	right := strings.TrimSpace(unread + " " + r.Age)
-	body := fmt.Sprintf(" %s %-16s %*s", glyph, name, w-22, right)
+	ctx := ""
+	if r.CtxPct > 0 {
+		ctx = fmt.Sprintf("%d%%", int(r.CtxPct))
+	}
+	right := strings.TrimSpace(strings.Join([]string{unread, ctx, r.Age}, " "))
+	body := fmt.Sprintf(" %s %-13s %*s", glyph, name, w-19, right)
 	if r.Name == m.selName {
 		return sSelected.Render(clip(body, w))
 	}
-	line := " " + stateStyle(r.State).Render(glyph) + " " + fmt.Sprintf("%-16s ", name)
-	if unread != "" {
-		line += lipgloss.NewStyle().Foreground(cWorking).Render(fmt.Sprintf("%*s", w-22, right))
-	} else {
-		line += sDim.Render(fmt.Sprintf("%*s", w-22, right))
+	line := " " + stateStyle(r.State).Render(glyph) + " " + fmt.Sprintf("%-13s ", name)
+	rightStyle := sDim
+	switch {
+	case unread != "":
+		rightStyle = lipgloss.NewStyle().Foreground(cWorking)
+	case r.CtxPct >= 80:
+		rightStyle = sErr
+	case r.CtxPct >= 60:
+		rightStyle = lipgloss.NewStyle().Foreground(cWorking)
 	}
+	line += rightStyle.Render(fmt.Sprintf("%*s", w-19, right))
 	return line
 }
 
@@ -839,6 +1254,12 @@ func (m tuiModel) viewDetail() string {
 	if harness == "" {
 		harness = "shell"
 	}
+	if r.Model != "" {
+		harness = r.Model // "Opus" beats "claude"
+		if r.CtxPct > 0 {
+			harness += fmt.Sprintf(" · ctx %d%%", int(r.CtxPct))
+		}
+	}
 	l1 := stateStyle(r.State).Bold(true).Render(clip(r.Name, 18)) + sDim.Render(" · "+r.State+" · "+harness)
 	l2 := sDim.Render(clip(collapseHome(r.Dir), w))
 	l3 := ""
@@ -846,6 +1267,9 @@ func (m tuiModel) viewDetail() string {
 		l3 = sDim.Render(clip("⎇ "+r.Branch, w))
 	}
 	l4 := sDim.Render(clip("$ "+r.Cmd, w))
+	if r.Role != "" {
+		l4 = sDim.Render(clip("★ "+r.Role, w)) // the charter beats the argv here
+	}
 	if r.Reason != "" && r.Reason != "heartbeat" {
 		l3 = sErr.Render(clip(r.Reason, w))
 	}
@@ -906,6 +1330,48 @@ func (m tuiModel) viewForm() string {
 		lines = append(lines, "")
 	}
 	return strings.Join(lines[:h], "\n")
+}
+
+// viewPick renders the project picker: filter input + discovered repos.
+// Rows start at screen y=4 (title 1, input 2, blank 3) — keep pickRowAt in sync.
+func (m tuiModel) viewPick() string {
+	h := m.listH() + detailH + 1 // replaces list+detail+buttons
+	lines := []string{sTitle.Render(" add project"), "  " + m.pickInput.View(), ""}
+	f := m.pickFiltered()
+	maxRows := h - 5
+	if len(f) == 0 {
+		lines = append(lines, sDim.Render("  no unregistered repos found"), "", sDim.Render("  paste a path above, or set"), sDim.Render("  MUSTER_REPO_ROOTS (colon-sep)"))
+	}
+	for i, r := range f {
+		if i >= maxRows {
+			lines = append(lines, sDim.Render(fmt.Sprintf("  … %d more — type to filter", len(f)-maxRows)))
+			break
+		}
+		name := fmt.Sprintf("%-18s", clip(filepath.Base(r), 18))
+		dir := clip(collapseHome(filepath.Dir(r)), sidebarW-22)
+		if i == m.pickSel {
+			lines = append(lines, sSelected.Render(clip(" "+name+" "+dir, sidebarW-1)))
+		} else {
+			lines = append(lines, " "+name+" "+sDim.Render(dir))
+		}
+	}
+	lines = append(lines, "", sHelp.Render(" ↑/↓ + enter (or click) · esc cancel"))
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// pickRowAt maps a screen row to a filtered-repo index (see viewPick layout).
+func (m tuiModel) pickRowAt(y int) int {
+	i := y - 4
+	if i >= 0 && i < len(m.pickFiltered()) {
+		return i
+	}
+	return -1
 }
 
 // formFieldAt maps a screen row to a form field index (label or input line).

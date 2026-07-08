@@ -22,6 +22,11 @@ func isEmbedded() bool { return os.Getenv("MUSTER_EMBEDDED") == "1" }
 // bootstrapWorkspace ensures the muster session exists (pane 0 = the
 // embedded TUI) and moves the user's terminal into it.
 func bootstrapWorkspace() int {
+	// the folder you open muster in is your space — even when re-joining
+	// an already-running workspace from a different repo
+	if cwd, err := os.Getwd(); err == nil {
+		setSpace(cwd)
+	}
 	if tmuxHasSession(wsSession) && !workspaceAlive() {
 		_ = tmuxKillSession(wsSession) // continuum-restored shell or crashed TUI
 	}
@@ -188,6 +193,51 @@ func (wp *workspacePanes) retarget(name, tmuxSess, state string) {
 // straight into the agent, exactly as if attached.
 func (wp *workspacePanes) focus() {
 	if wp.right != "" {
+		_, _ = tmuxRun("select-pane", "-t", wp.right)
+	}
+}
+
+// pin opens an extra live pane for sess next to the main agent pane
+// (dir: "right"|"down"|"left"). Pinned panes are plain tmux panes — the
+// user closes them like any pane; they vanish when the agent dies.
+func (wp *workspacePanes) pin(sess, dir string) {
+	if wp.right == "" {
+		return
+	}
+	args := []string{"split-window"}
+	switch dir {
+	case "right":
+		args = append(args, "-h")
+	case "down":
+		args = append(args, "-v")
+	case "left":
+		args = append(args, "-h", "-b")
+	default:
+		return
+	}
+	args = append(args, "-d", "-t", wp.right, attachCmd(sess))
+	_, _ = tmuxRun(args...)
+}
+
+// runSetup runs an interactive command (e.g. ppz login) in the agent pane,
+// then hands the pane back to the selected agent. lastTarget is left alone
+// so the 2s tick doesn't clobber the flow; changing selection still will.
+func (wp *workspacePanes) runSetup(cmd, thenAttach string) {
+	if wp.right == "" {
+		return
+	}
+	full := cmd + `; echo; echo '  done.'; sleep 2`
+	if thenAttach != "" {
+		full += "; " + attachCmd(thenAttach)
+	}
+	_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, "sh -c "+shQuote(full))
+	_, _ = tmuxRun("select-pane", "-t", wp.right)
+}
+
+// zoom toggles the agent pane fullscreen (C-b z restores).
+func (wp *workspacePanes) zoom() {
+	if wp.right != "" {
+		_, _ = tmuxRun("resize-pane", "-Z", "-t", wp.right)
 		_, _ = tmuxRun("select-pane", "-t", wp.right)
 	}
 }

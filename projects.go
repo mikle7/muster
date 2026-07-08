@@ -78,6 +78,108 @@ func expandHome(p string) string {
 	return p
 }
 
+func isGitRepo(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git")) // dir or file (worktree)
+	return err == nil
+}
+
+// ---- the current space ------------------------------------------------------
+// The folder you launch muster from IS your space (herdr-style): it gets
+// auto-registered (git repos only) and floats to the top of the sidebar.
+
+func spacePath() string { return filepath.Join(dataDir(), "space") }
+
+// setSpace records dir as the current space; git repos are auto-registered
+// as projects so agents group under them immediately. A subdir resolves to
+// its repo root.
+func setSpace(dir string) {
+	if dir == "" {
+		return
+	}
+	if root := gitRoot(dir); root != "" {
+		dir = root
+		_, _ = addProject(dir, "")
+	}
+	_ = os.MkdirAll(dataDir(), 0o755)
+	_ = atomicWrite(spacePath(), []byte(dir))
+}
+
+// gitRoot walks up from dir to the enclosing git repo root ("" if none).
+func gitRoot(dir string) string {
+	for d := dir; ; d = filepath.Dir(d) {
+		if isGitRepo(d) {
+			return d
+		}
+		if filepath.Dir(d) == d {
+			return ""
+		}
+	}
+}
+
+func currentSpace() string {
+	b, err := os.ReadFile(spacePath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// ---- repo discovery (the [+ project] picker) --------------------------------
+
+// repoRoots are scanned one level deep for git repos. Overridable because
+// everyone's layout differs, but the defaults cover the usual suspects.
+func repoRoots() []string {
+	if v := os.Getenv("MUSTER_REPO_ROOTS"); v != "" {
+		return filepath.SplitList(v)
+	}
+	h, _ := os.UserHomeDir()
+	return []string{
+		filepath.Join(h, "Repos"), filepath.Join(h, "repos"),
+		filepath.Join(h, "code"), filepath.Join(h, "src"),
+		filepath.Join(h, "Projects"), filepath.Join(h, "dev"),
+		filepath.Join(h, "work"),
+	}
+}
+
+// discoverRepos lists git repos under the roots (and the roots themselves if
+// they are repos) that aren't registered projects yet. Worktree dirs muster
+// created (X__wt) are skipped — they belong to their parent repo.
+func discoverRepos(registered []Project) []string {
+	taken := map[string]bool{}
+	for _, p := range registered {
+		taken[p.Path] = true
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(dir string) {
+		if !seen[dir] && !taken[dir] && !strings.HasSuffix(dir, "__wt") {
+			seen[dir] = true
+			out = append(out, dir)
+		}
+	}
+	for _, root := range repoRoots() {
+		if isGitRepo(root) {
+			add(root)
+			continue
+		}
+		ents, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			dir := filepath.Join(root, e.Name())
+			if isGitRepo(dir) {
+				add(dir)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // projectFor matches an agent dir to a registered project by path prefix,
 // longest path first (so nested projects win). Worktree agents match via
 // their Repo. "" = no project.

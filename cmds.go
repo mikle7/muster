@@ -26,6 +26,7 @@ func cmdSpawn(args []string) int {
 	dir := fs.String("C", "", "directory to run in (default: cwd)")
 	repo := fs.String("repo", "", "repo to create a worktree from (with -b)")
 	branch := fs.String("b", "", "branch/worktree name (with --repo)")
+	role := fs.String("role", "", "the agent's charter, e.g. 'reviewer' — teammates learn it")
 	var envFlags multiFlag
 	fs.Var(&envFlags, "e", "extra env K=V (repeatable)")
 	noPpz := fs.Bool("no-ppz", false, "don't wrap in ppz terminal share")
@@ -62,6 +63,7 @@ func cmdSpawn(args []string) int {
 
 	spec := &AgentSpec{
 		Name:        name,
+		Role:        *role,
 		Argv:        argv,
 		Env:         map[string]string{},
 		TmuxSession: tmuxSession(name),
@@ -126,6 +128,11 @@ func launch(spec *AgentSpec, resume, noPpz bool) int {
 	} else {
 		spec.PpzHandle = ""
 	}
+	// settings are regenerated every launch so binary upgrades (new hooks,
+	// statusLine) reach agents without re-running init
+	if _, err := writeHooksSettings(); err != nil {
+		fmt.Fprintf(os.Stderr, "muster: hooks settings: %v (continuing without)\n", err)
+	}
 	compose := composeSpawn
 	if resume {
 		compose = composeResume
@@ -178,18 +185,23 @@ func launch(spec *AgentSpec, resume, noPpz bool) int {
 // ---- ls -------------------------------------------------------------------
 
 type lsRow struct {
-	Name    string `json:"name"`
-	State   string `json:"state"`
-	Reason  string `json:"reason,omitempty"`
-	Harness string `json:"harness,omitempty"`
-	Dir     string `json:"dir"`
-	Repo    string `json:"repo,omitempty"`
-	Branch  string `json:"branch,omitempty"`
-	Tmux    string `json:"tmux"`
-	Ppz     string `json:"ppz,omitempty"`
-	Unread  int    `json:"unread"`
-	Age     string `json:"age"`
-	Cmd     string `json:"cmd"`
+	Name    string  `json:"name"`
+	Role    string  `json:"role,omitempty"`
+	State   string  `json:"state"`
+	Reason  string  `json:"reason,omitempty"`
+	Harness string  `json:"harness,omitempty"`
+	Dir     string  `json:"dir"`
+	Repo    string  `json:"repo,omitempty"`
+	Branch  string  `json:"branch,omitempty"`
+	Tmux    string  `json:"tmux"`
+	Ppz     string  `json:"ppz,omitempty"`
+	Unread  int     `json:"unread"`
+	Age     string  `json:"age"`
+	Cmd     string  `json:"cmd"`
+	Model   string  `json:"model,omitempty"`   // from claude statusline
+	CtxPct  float64 `json:"ctx_pct,omitempty"` // context window used %
+	FivePct float64 `json:"five_pct,omitempty"`
+	FiveEnd string  `json:"five_end,omitempty"` // HH:MM reset time
 }
 
 func gatherRows() ([]lsRow, error) {
@@ -202,11 +214,20 @@ func gatherRows() ([]lsRow, error) {
 	var rows []lsRow
 	for _, s := range specs {
 		state, reason := liveState(s, hb)
-		rows = append(rows, lsRow{
-			Name: s.Name, State: state, Reason: reason, Harness: s.Harness,
+		r := lsRow{
+			Name: s.Name, Role: s.Role, State: state, Reason: reason, Harness: s.Harness,
 			Dir: s.Dir, Repo: s.Repo, Branch: s.Branch, Tmux: s.TmuxSession, Ppz: s.PpzHandle,
 			Unread: unread[s.PpzHandle], Age: fmtAge(s.CreatedAt), Cmd: shJoin(s.Argv),
-		})
+		}
+		if s.SessionUUID != "" {
+			if u := loadUsage(s.SessionUUID); u != nil {
+				r.Model, r.CtxPct, r.FivePct = u.Model, u.CtxPct, u.FiveHrPct
+				if !u.FiveHrReset.IsZero() {
+					r.FiveEnd = u.FiveHrReset.Local().Format("15:04")
+				}
+			}
+		}
+		rows = append(rows, r)
 	}
 	return rows, nil
 }
@@ -573,6 +594,36 @@ func cmdCron(args []string) int {
 		return 0
 	}
 	return fail(errf("unknown cron subcommand %q", args[0]))
+}
+
+// ---- standup ------------------------------------------------------------------
+
+// cmdStandup asks every live mesh agent for a status report. Just a
+// broadcast with a good prompt — replies land in the mstrctl inbox like any
+// other team traffic and show in the mesh view (M).
+func cmdStandup(args []string) int {
+	if err := requirePpz(); err != nil {
+		return fail(err)
+	}
+	specs, err := listSpecs()
+	if err != nil {
+		return fail(err)
+	}
+	prompt := "STANDUP: reply to mstrctl now (ppz send mstrctl '...') with max 5 lines: " +
+		"current task, progress, blockers, what's next."
+	n := 0
+	for _, s := range specs {
+		if s.PpzHandle == "" || !tmuxHasSession(s.TmuxSession) {
+			continue
+		}
+		if err := ppzSend(s.PpzHandle, prompt); err != nil {
+			fmt.Fprintf(os.Stderr, "muster: %s: %v\n", s.Name, err)
+			continue
+		}
+		n++
+	}
+	fmt.Printf("standup requested from %d agents — idle agents answer right away, busy ones when they finish a step.\nreplies: muster ui mesh view (M), or: ppz reread mstrctl.inbox --since 1h\n", n)
+	return 0
 }
 
 // ---- menu / init / doctor ---------------------------------------------------

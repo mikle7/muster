@@ -24,8 +24,13 @@ behind every decision).
 ## Test without burning API quota
 
 - Isolated tmux: `export MUSTER_TMUX_ARGS="-L mstrtest -f /dev/null"`,
-  scratch state: `export MUSTER_STATE_DIR=/tmp/...`. The user's real tmux
-  auto-restores sessions via continuum — never test on their server.
+  scratch state: `export MUSTER_STATE_DIR=/tmp/...`, and
+  `export MUSTER_NOTIFY=0` (blocked-agent hooks otherwise pop REAL macOS
+  notifications during tests). The user's real tmux auto-restores
+  sessions via continuum — never test on their server.
+- When driving forms with send-keys, sleep ~0.3s between Tab and text —
+  batched input can swallow a keypress. Long values in textinput fields
+  scroll horizontally; captures showing a clipped head are NOT a bug.
 - Visual TUI testing: with the scratch env set, `./muster ui` bootstraps
   the `muster` workspace session headless (the final self-attach fails
   without a tty — expected). `resize-window -t '=muster:' -x 170 -y 42`,

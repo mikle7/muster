@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ctlSession is the PPZ_SESSION muster's own commands run under, so the
@@ -24,17 +26,43 @@ func ppzBin() string {
 
 func ppzCmd(session string, args ...string) *exec.Cmd {
 	c := exec.Command(ppzBin(), args...)
-	c.Env = append(os.Environ(), "PPZ_SESSION="+session)
+	// NO_COLOR: we scrape output. PPZ_UPDATE_CHECK=0: status/login otherwise
+	// make a network update check per call.
+	c.Env = append(os.Environ(), "PPZ_SESSION="+session, "NO_COLOR=1", "PPZ_UPDATE_CHECK=0")
 	return c
 }
 
-// ppzReady reports whether the ppz daemon is up and logged in.
+// ppzStatusText is the raw `ppz status` output — already the best short
+// human summary of the mesh (daemon, server, account, nats).
+func ppzStatusText() string {
+	if ppzBin() == "" {
+		return "ppz CLI not found (set MUSTER_PPZ or install ppz)"
+	}
+	out, _ := ppzCmd(ctlSession, "status").CombinedOutput()
+	return strings.TrimSpace(string(out))
+}
+
+var readyCache struct {
+	sync.Mutex
+	ok bool
+	at time.Time
+}
+
+// ppzReady reports whether the ppz daemon is up and logged in. Cached ~10s:
+// the TUI refreshes every 2s and several helpers call this per refresh.
 func ppzReady() bool {
 	if ppzBin() == "" {
 		return false
 	}
+	readyCache.Lock()
+	defer readyCache.Unlock()
+	if time.Since(readyCache.at) < 10*time.Second {
+		return readyCache.ok
+	}
 	out, err := ppzCmd(ctlSession, "status").CombinedOutput()
-	return err == nil && strings.Contains(string(out), "logged in")
+	readyCache.ok = err == nil && strings.Contains(string(out), "logged in")
+	readyCache.at = time.Now()
+	return readyCache.ok
 }
 
 // ensureCtlHandle makes sure the mstrctl control handle exists and is
@@ -140,6 +168,32 @@ func ppzReadInbox(session, handle string) ([]ppzEnvelope, error) {
 		}
 	}
 	return msgs, nil
+}
+
+// ppzReread replays retained history on target without moving any cursor
+// (envelopes newest-last). since is a ppz duration like "6h".
+func ppzReread(target, since string) []ppzEnvelope {
+	out, err := ppzCmd(ctlSession, "reread", target, "--json", "--since", since).Output()
+	if err != nil && len(strings.TrimSpace(string(out))) == 0 {
+		return nil
+	}
+	var msgs []ppzEnvelope
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		var e ppzEnvelope
+		if json.Unmarshal([]byte(line), &e) == nil {
+			msgs = append(msgs, e)
+		}
+	}
+	return msgs
+}
+
+// ppzScheduleText is `ppz schedule ls` verbatim (already a tidy table).
+func ppzScheduleText() string {
+	out, _ := ppzCmd(ctlSession, "schedule", "ls").CombinedOutput()
+	return strings.TrimSpace(string(out))
 }
 
 type ppzPipeRow struct {

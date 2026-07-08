@@ -54,6 +54,15 @@
 - [x] docs + install to ~/.local/bin
 (see STATUS.md "Session 2" + DESIGN.md "Workspace mode")
 
+## Session 3 (2026-07-09) — spaces, menus, usage, team  ✅ live comms E2E passed
+- [x] cwd = space (auto-register, ● marker, form preselect) + repo picker
+- [x] right-click menus (display-menu): agent splits/zoom/actions, project spawn/worktree
+- [x] model + ctx% + 5h window via injected statusLine (usage.json per session)
+- [x] roles + roster briefing + `muster standup`; alice/dave named-comms E2E proven
+- [x] pipes mesh view (M): status/team/messages/schedules + guided connect
+- [x] attention sort (o), blocked desktop notifications
+(see STATUS.md "Session 3" + DESIGN.md "Session 3")
+
 ## Post-MVP backlog (do not build now)
 - ~~bubbletea dashboard (`muster ui`)~~ → shipped, then reshaped into workspace mode (session 2)
 - tmux status-right segment helper (`muster status --format tmux`)
