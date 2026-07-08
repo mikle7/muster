@@ -62,13 +62,18 @@ Every phase in PLAN.md is checked off, with real end-to-end evidence:
 
 - muster repo: `Repos/pipe-terminal/muster` (git, committed). Build:
   `go build -o muster .`
-- Local ppz mesh RUNNING: `ppz-server` (pid file? re-check `curl
-  localhost:8080/healthz`) with dev-login, NATS 127.0.0.1:4222, Postgres db
-  `ppz` on homebrew postgresql@14. State: `muster/.dev/ppz-local/`
-  (`nats.env` = trust root, DO NOT regenerate; `seed/key-alpha.txt` = login
-  key). Restart recipe in RESEARCH.md §1 + server.log alongside.
-  CLI logged in as org `alpha`; `ppz` symlinked at `~/.local/bin/ppz`
-  (→ `Repos/pipe-terminal/ppz/bin/ppz`, built from source v0.51).
+- Local ppz mesh RUNNING: `ppz-server` with dev-login, NATS 127.0.0.1:4222,
+  Postgres db `ppz` on homebrew postgresql@14. State:
+  `muster/.dev/ppz-local/` (`nats.env` = trust root, DO NOT regenerate;
+  `seed/key-alpha.txt` = login key). **Restart after reboot:
+  `.dev/ppz-local/start.sh`** (idempotent, verified). CLI logged in as org
+  `alpha`; `ppz` symlinked at `~/.local/bin/ppz` (→
+  `Repos/pipe-terminal/ppz/bin/ppz`, built from source v0.51).
+- **The user is live on it**: agents `pixel` + `tester` spawned via the
+  installed binary at ~20:24 on 2026-07-08, hooks firing into the real
+  state dir (`~/.local/share/muster/`), hooks-settings pointing at
+  `~/.local/bin/muster hook`. Don't clobber their fleet when testing —
+  use MUSTER_STATE_DIR + a scratch tmux socket (see CLAUDE.md).
 - Test artifacts (scratch, disposable): tmux server `-L mstrtest`,
   MUSTER_STATE_DIR under the session scratchpad, agents worker1/worker2/
   dummy1. Killed at session end; specs remain in the scratch state dir.
