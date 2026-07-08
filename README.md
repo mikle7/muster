@@ -53,6 +53,29 @@ With it (`ppz login pipescloud.io`, or self-host — see
 `docs/…/ppz-local` notes in STATUS.md) you add messaging, scheduling,
 heartbeats, and remote terminal watch.
 
+## The UI
+
+Just run `muster`. Full-screen, keyboard-only:
+
+```
+ muster · 4 agents · mesh ok
+╭─ agents ─────────────────╮╭─ api-fix · working ────────────────────────────╮
+│ ⚙ api-fix                ││ api-fix  working · claude --dangerously-skip…  │
+│    working · claude · 2m ││ ~/code/api__wt/fix-auth                        │
+│ ✋ docs           ✉1     ││ ───────────────────────────────────────────    │
+│    blocked · claude · 2m ││ ⏺ Write(src/auth.ts) — patching token refresh  │
+│ ✔ review                 ││ ⏺ Bash(npm test) …                             │
+│    idle · claude · 1m    ││   (live tmux pane preview)                     │
+╰──────────────────────────╯╰────────────────────────────────────────────────╯
+ sent to docs — ppz nudges the agent when it goes idle
+ enter attach · s send · S spawn · K kill · r/R resume · i inbox · c/C cron · b broadcast · ? help · q quit
+```
+
+Every pipes command is a keystroke — no ppz syntax to remember: `s` send,
+`b` broadcast, `i` peek inbox, `c` schedule, `C` list schedules. `enter`
+attaches (tmux switch-client, so detaching drops you back where you were);
+on a dead agent `enter` resumes it with its exact original command.
+
 ## Commands
 
 | | |

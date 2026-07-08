@@ -3,7 +3,32 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases, all ✅), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-08 (session 1 — MVP complete, all live tests passed)
+**Last updated:** 2026-07-08 (session 1b — MVP + full-screen TUI, all live tests passed)
+
+## Session 1b addendum: the TUI
+
+User feedback: "I should be able to run 'muster' and it opens a full
+terminal UI... agents should handle the cli commands; the UI hides ppz."
+Built `tui.go` (bubbletea v1.3.6 + bubbles + lipgloss — the only deps).
+`muster` with no args opens it; `muster ui` too.
+
+- Layout: sidebar (state glyph, name, unread ✉ badge, state·harness·age)
+  + main panel (header, dir, live `tmux capture-pane` preview of the
+  selected agent, 2s tick). Bottom: status line + key help / prompt input.
+- Every action self-execs the muster CLI (`runSelf`) so UI and CLI can
+  never disagree. Keys: j/k, enter=attach (switch-client inside tmux,
+  tea.ExecProcess `tmux attach` outside; on dead agent = resume), s send,
+  b broadcast, S spawn, K kill (y / y --rm confirm), r/R resume, i inbox
+  view, c cron add, C schedules view, g refresh, ? help, q quit.
+- VISUAL TESTING METHOD (use this next time): run the TUI in a scratch
+  tmux (`tmux -L mstrtest -f /dev/null new-session -d -x 180 -y 45 -e
+  MUSTER_*=... ./muster`), drive with `send-keys`, read frames with
+  `capture-pane -p` (`-e` to check colors). Fake fleet states by editing
+  spec JSONs (harness/session_uuid) + writing status/<uuid>.json — zero
+  API cost. All flows verified this way at 170x42 and 80x24.
+- Known TUI gaps: switch-client untested with a real attached client
+  (needs a human); no scrollback in preview (attach for that); meshWord
+  cached per process; sidebar not scrollable past ~15 agents yet.
 
 ## What this is
 

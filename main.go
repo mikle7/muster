@@ -12,6 +12,8 @@ import (
 
 const usage = `muster — herd an army of coding agents with tmux + ppz pipes
 
+  (no command)            open the muster UI
+
   spawn <name> [-C dir | --repo dir -b branch] [-e K=V]... [--] [cmd...]
                           start an agent (default cmd: $MUSTER_DEFAULT_CMD or claude)
   ls [--json] [--watch]   every agent: state, unread, age
@@ -35,15 +37,18 @@ state: ⚙ working  ✋ blocked  ✔ idle  ☠ dead   env: MUSTER_DEFAULT_CMD, M
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Print(usage)
-		os.Exit(2)
+		os.Exit(cmdTUI(nil))
 	}
 	cmds := map[string]func([]string) int{
-		"spawn": cmdSpawn, "ls": cmdLs, "attach": cmdAttach, "menu": cmdMenu,
+		"ui": cmdTUI, "spawn": cmdSpawn, "ls": cmdLs, "attach": cmdAttach, "menu": cmdMenu,
 		"resume": cmdResume, "kill": cmdKill,
 		"send": cmdSend, "broadcast": cmdBroadcast, "inbox": cmdInbox,
 		"cron": cmdCron,
 		"init": cmdInit, "doctor": cmdDoctor, "hook": cmdHook,
+	}
+	if os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h" {
+		fmt.Print(usage)
+		os.Exit(0)
 	}
 	fn, ok := cmds[os.Args[1]]
 	if !ok {
