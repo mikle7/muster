@@ -46,8 +46,16 @@
 - [x] git init + first commit
 - [x] update STATUS.md with what's done/left, known issues
 
+## Session 2 (2026-07-08) — workspace mode  ✅ all E2E-tested headless
+- [x] live interactive agent pane (nested tmux attach, switch-client retarget)
+- [x] projects registry + sidebar grouping (`muster project`, projects.json)
+- [x] mouse support, `[+ agent]`/`[+ project]` buttons, spawn + project forms
+- [x] dead-agent placeholder pane, enter-resume, q/d quit/leave semantics
+- [x] docs + install to ~/.local/bin
+(see STATUS.md "Session 2" + DESIGN.md "Workspace mode")
+
 ## Post-MVP backlog (do not build now)
-- bubbletea dashboard (`muster ui`)
+- ~~bubbletea dashboard (`muster ui`)~~ → shipped, then reshaped into workspace mode (session 2)
 - tmux status-right segment helper (`muster status --format tmux`)
 - Claude agent-teams interop (adopt teammates as muster agents)
 - adopt existing panes (`muster adopt`)

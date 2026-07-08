@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -12,12 +11,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// The TUI is a thin shell over muster's own CLI: every action key
-// self-execs `muster <cmd> ...` so the UI and CLI can never disagree.
-// The pane preview is tmux capture-pane; attach is switch-client (inside
-// tmux) or a suspended `tmux attach` (outside). No PTY ownership, ever.
+// The TUI is the muster workspace's LEFT pane only — a sidebar of projects
+// and agents. The right pane is a real tmux client attached to the selected
+// agent (see workspace.go): click it (or press enter) and type into the
+// agent exactly as if attached. Every action still self-execs the muster
+// CLI (runSelf) so UI and CLI can never disagree. No PTY ownership, ever.
 
-const sidebarW = 30
+const sidebarW = 38
 
 var (
 	cWorking = lipgloss.AdaptiveColor{Light: "166", Dark: "214"}
@@ -29,11 +29,13 @@ var (
 
 	sTitle    = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	sDim      = lipgloss.NewStyle().Foreground(cDim)
+	sProj     = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	sSelected = lipgloss.NewStyle().Bold(true).Background(cAccent).Foreground(lipgloss.AdaptiveColor{Light: "255", Dark: "232"})
 	sHelp     = lipgloss.NewStyle().Foreground(cDim)
 	sStatus   = lipgloss.NewStyle().Foreground(cIdle)
 	sErr      = lipgloss.NewStyle().Foreground(cBlocked)
-	sBorder   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cDim)
+	sButton   = lipgloss.NewStyle().Bold(true).Foreground(cAccent).Background(lipgloss.AdaptiveColor{Light: "254", Dark: "236"})
+	sField    = lipgloss.NewStyle().Foreground(cAccent)
 )
 
 func stateStyle(state string) lipgloss.Style {
@@ -48,10 +50,12 @@ func stateStyle(state string) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(cDead)
 }
 
+// ---- messages ---------------------------------------------------------------
+
 type tickMsg struct {
-	rows    []lsRow
-	preview string
-	seq     int
+	rows     []lsRow
+	projects []Project
+	seq      int
 }
 type execDoneMsg struct {
 	label string
@@ -59,65 +63,11 @@ type execDoneMsg struct {
 	err   error
 }
 
-type promptSpec struct {
-	label       string
-	placeholder string
-	// build the muster CLI argv from the submitted text
-	argv func(text string) []string
-}
-
-type tuiModel struct {
-	rows    []lsRow
-	sel     int
-	preview string
-	w, h    int
-
-	mode      string // normal | prompt | view
-	prompt    promptSpec
-	input     textinput.Model
-	viewTitle string
-	viewBody  string
-
-	status  string
-	statErr bool
-	seq     int
-}
-
-func selName(m *tuiModel) string {
-	if m.sel >= 0 && m.sel < len(m.rows) {
-		return m.rows[m.sel].Name
-	}
-	return ""
-}
-
-func refreshCmd(sel string, seq, lines int) tea.Cmd {
+func refreshCmd(seq int) tea.Cmd {
 	return func() tea.Msg {
 		rows, _ := gatherRows()
-		prev := ""
-		for _, r := range rows {
-			if r.Name == sel && r.State != "dead" {
-				out, err := tmuxRun("capture-pane", "-t", "="+r.Tmux+":", "-p")
-				if err == nil {
-					prev = tailLines(out, lines)
-				}
-			}
-		}
-		return tickMsg{rows: rows, preview: prev, seq: seq}
+		return tickMsg{rows: rows, projects: loadProjects(), seq: seq}
 	}
-}
-
-func tailLines(s string, n int) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	// drop trailing blank region tmux pads panes with
-	end := len(lines)
-	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
-		end--
-	}
-	start := end - n
-	if start < 0 {
-		start = 0
-	}
-	return strings.Join(lines[start:end], "\n")
 }
 
 func runSelf(label string, argv ...string) tea.Cmd {
@@ -131,39 +81,284 @@ func tickEvery() tea.Cmd {
 	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tickMsg{seq: -1} })
 }
 
+// ---- sidebar items ----------------------------------------------------------
+
+type sideItem struct {
+	kind     string // "proj" | "agent"
+	projName string // proj: display name ("" = unassigned bucket)
+	projPath string
+	row      lsRow // agent
+}
+
+func buildItems(rows []lsRow, projects []Project) []sideItem {
+	byProj := map[string][]lsRow{}
+	for _, r := range rows {
+		p := projectFor(projects, r)
+		byProj[p] = append(byProj[p], r)
+	}
+	var items []sideItem
+	for _, p := range projects {
+		items = append(items, sideItem{kind: "proj", projName: p.Name, projPath: p.Path})
+		for _, r := range byProj[p.Name] {
+			items = append(items, sideItem{kind: "agent", row: r, projName: p.Name, projPath: p.Path})
+		}
+	}
+	if loose := byProj[""]; len(loose) > 0 {
+		if len(projects) > 0 {
+			items = append(items, sideItem{kind: "proj", projName: ""})
+		}
+		for _, r := range loose {
+			items = append(items, sideItem{kind: "agent", row: r})
+		}
+	}
+	return items
+}
+
+// ---- forms ------------------------------------------------------------------
+
+type ffield struct {
+	label string
+	hint  string
+	ti    textinput.Model
+	sel   []string // non-nil = selector field (←/→ cycles), ti unused
+	selIx int
+}
+
+type uiForm struct {
+	kind   string // "spawn" | "project"
+	title  string
+	fields []ffield
+	focus  int
+}
+
+func textField(label, placeholder, hint string) ffield {
+	ti := textinput.New()
+	ti.Placeholder = placeholder
+	ti.CharLimit = 512
+	ti.Width = sidebarW - 6
+	return ffield{label: label, hint: hint, ti: ti}
+}
+
+func (f *uiForm) setFocus(i int) {
+	for j := range f.fields {
+		f.fields[j].ti.Blur()
+	}
+	f.focus = i
+	if f.fields[i].sel == nil {
+		f.fields[i].ti.Focus()
+	}
+}
+
+func (f *uiForm) val(i int) string {
+	if f.fields[i].sel != nil {
+		return f.fields[i].sel[f.fields[i].selIx]
+	}
+	return strings.TrimSpace(f.fields[i].ti.Value())
+}
+
+func newSpawnForm(projects []Project, preselect string) *uiForm {
+	sel := []string{"(none — spawn in cwd)"}
+	ix := 0
+	for i, p := range projects {
+		sel = append(sel, p.Name)
+		if p.Name == preselect {
+			ix = i + 1
+		}
+	}
+	f := &uiForm{kind: "spawn", title: "new agent", fields: []ffield{
+		textField("name", "e.g. fixer", "lowercase, digits, dashes"),
+		{label: "project", sel: sel, selIx: ix, hint: "←/→ to change"},
+		textField("branch", "(optional)", "creates a git worktree for it"),
+		textField("command", "claude (default)", "the agent's exact command"),
+	}}
+	f.setFocus(0)
+	return f
+}
+
+func newProjectForm() *uiForm {
+	f := &uiForm{kind: "project", title: "add project", fields: []ffield{
+		textField("path", "~/Repos/my-app", "repo or directory"),
+		textField("name", "(basename)", "shown in the sidebar"),
+	}}
+	f.setFocus(0)
+	return f
+}
+
+// ---- model ------------------------------------------------------------------
+
+type promptSpec struct {
+	label       string
+	placeholder string
+	argv        func(text string) []string
+}
+
+type tuiModel struct {
+	rows     []lsRow
+	projects []Project
+	items    []sideItem
+	selName  string
+	scroll   int
+	w, h     int
+
+	wp workspacePanes
+
+	mode      string // normal | prompt | form | view
+	prompt    promptSpec
+	input     textinput.Model
+	form      *uiForm
+	viewTitle string
+	viewBody  string
+
+	status        string
+	statErr       bool
+	seq           int
+	pendingSelect string
+	quitKill      bool
+}
+
 func newTUI() tuiModel {
 	ti := textinput.New()
 	ti.CharLimit = 4096
-	ti.Width = 120
-	return tuiModel{mode: "normal", status: "muster — j/k move · ? help", input: ti}
+	ti.Width = sidebarW - 4
+	return tuiModel{mode: "normal", status: "click an agent, then just type", input: ti}
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	return tea.Batch(refreshCmd("", 0, 40), tickEvery())
+	return tea.Batch(refreshCmd(0), tickEvery())
 }
+
+// selected returns the selected agent row, or nil.
+func (m *tuiModel) selected() *lsRow {
+	for i := range m.items {
+		if m.items[i].kind == "agent" && m.items[i].row.Name == m.selName {
+			return &m.items[i].row
+		}
+	}
+	return nil
+}
+
+// agentIdxs lists item indexes that are agents (the selection ring).
+func (m *tuiModel) agentIdxs() []int {
+	var out []int
+	for i, it := range m.items {
+		if it.kind == "agent" {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+func (m *tuiModel) moveSel(delta int) {
+	ring := m.agentIdxs()
+	if len(ring) == 0 {
+		m.selName = ""
+		return
+	}
+	cur := -1
+	for i, idx := range ring {
+		if m.items[idx].row.Name == m.selName {
+			cur = i
+			break
+		}
+	}
+	next := cur + delta
+	if cur == -1 {
+		next = 0
+	}
+	if next < 0 {
+		next = 0
+	}
+	if next >= len(ring) {
+		next = len(ring) - 1
+	}
+	m.selName = m.items[ring[next]].row.Name
+	m.ensureVisible(ring[next])
+}
+
+func (m *tuiModel) ensureVisible(itemIdx int) {
+	h := m.listH()
+	if itemIdx < m.scroll {
+		m.scroll = itemIdx
+	}
+	if itemIdx >= m.scroll+h {
+		m.scroll = itemIdx - h + 1
+	}
+}
+
+// retarget points the workspace's agent pane at the current selection.
+func (m *tuiModel) retarget() {
+	if r := m.selected(); r != nil {
+		m.wp.retarget(r.Name, r.Tmux, r.State)
+	} else {
+		m.wp.retarget("", "", "")
+	}
+}
+
+func (m *tuiModel) rebuild() {
+	m.items = buildItems(m.rows, m.projects)
+	ring := m.agentIdxs()
+	if m.pendingSelect != "" {
+		for _, idx := range ring {
+			if m.items[idx].row.Name == m.pendingSelect {
+				m.selName = m.pendingSelect
+				m.pendingSelect = ""
+				m.ensureVisible(idx)
+			}
+		}
+	}
+	if m.selected() == nil { // selection vanished (killed --rm, first load)
+		m.selName = ""
+		if len(ring) > 0 {
+			m.selName = m.items[ring[0]].row.Name
+		}
+	}
+	if max := len(m.items) - m.listH(); m.scroll > max {
+		m.scroll = max
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
+	m.retarget()
+}
+
+// ---- layout -----------------------------------------------------------------
+// Fixed vertical layout (1 line per item keeps mouse hit-testing trivial):
+//   y0 title · list (listH) · detail (detailH, first line is the separator)
+//   · buttons · status · help
+
+const detailH = 5
+
+func (m tuiModel) listH() int {
+	n := m.h - detailH - 4
+	if n < 3 {
+		n = 3
+	}
+	return n
+}
+
+func (m tuiModel) listTop() int { return 1 }
+func (m tuiModel) btnY() int    { return 1 + m.listH() + detailH }
+
+// ---- update -----------------------------------------------------------------
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+		m.wp.ensure(m.w)
+		m.retarget()
 		return m, nil
 
 	case tickMsg:
 		if msg.seq == -1 { // timer fired: kick a real refresh
 			m.seq++
-			return m, tea.Batch(refreshCmd(selName(&m), m.seq, m.previewLines()), tickEvery())
+			return m, tea.Batch(refreshCmd(m.seq), tickEvery())
 		}
 		if msg.seq != m.seq { // stale refresh
 			return m, nil
 		}
-		m.rows = msg.rows
-		if m.sel >= len(m.rows) {
-			m.sel = len(m.rows) - 1
-		}
-		if m.sel < 0 {
-			m.sel = 0
-		}
-		m.preview = msg.preview
+		m.rows, m.projects = msg.rows, msg.projects
+		m.rebuild()
 		return m, nil
 
 	case execDoneMsg:
@@ -172,19 +367,24 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status, m.statErr = msg.label+": "+firstLine(msg.out), false
 			if msg.label == "inbox" || msg.label == "cron ls" {
-				m.mode, m.viewTitle, m.viewBody = "view", msg.label+" — "+selName(&m), msg.out
+				m.mode, m.viewTitle, m.viewBody = "view", msg.label, msg.out
 				if msg.label == "cron ls" {
 					m.viewTitle = "schedules"
 				}
 			}
 		}
 		m.seq++
-		return m, refreshCmd(selName(&m), m.seq, m.previewLines())
+		return m, refreshCmd(m.seq)
+
+	case tea.MouseMsg:
+		return m.updateMouse(msg)
 
 	case tea.KeyMsg:
 		switch m.mode {
 		case "prompt":
 			return m.updatePrompt(msg)
+		case "form":
+			return m.updateForm(msg)
 		case "view":
 			switch msg.String() {
 			case "esc", "q", "enter":
@@ -193,6 +393,66 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.updateNormal(msg)
+	}
+	return m, nil
+}
+
+func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		d := 3
+		if msg.Button == tea.MouseButtonWheelUp {
+			d = -3
+		}
+		m.scroll += d
+		if max := len(m.items) - m.listH(); m.scroll > max {
+			m.scroll = max
+		}
+		if m.scroll < 0 {
+			m.scroll = 0
+		}
+		return m, nil
+	}
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft || m.mode == "view" {
+		return m, nil
+	}
+	if m.mode == "form" {
+		// click a field line to focus it
+		if i := m.formFieldAt(msg.Y); i >= 0 {
+			m.form.setFocus(i)
+		}
+		return m, nil
+	}
+	// list rows
+	if y := msg.Y - m.listTop(); y >= 0 && y < m.listH() {
+		idx := m.scroll + y
+		if idx >= 0 && idx < len(m.items) {
+			switch it := m.items[idx]; it.kind {
+			case "agent":
+				m.selName = it.row.Name
+				m.retarget()
+			case "proj":
+				m.form = newSpawnForm(m.projects, it.projName)
+				m.mode = "form"
+			}
+		}
+		return m, nil
+	}
+	// buttons
+	if msg.Y == m.btnY() {
+		switch hitButton(msg.X) {
+		case "agent":
+			r := m.selected()
+			pre := ""
+			if r != nil {
+				pre = projectFor(m.projects, *r)
+			}
+			m.form = newSpawnForm(m.projects, pre)
+			m.mode = "form"
+		case "project":
+			m.form = newProjectForm()
+			m.mode = "form"
+		}
 	}
 	return m, nil
 }
@@ -219,6 +479,88 @@ func (m tuiModel) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m tuiModel) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	f := m.form
+	switch msg.String() {
+	case "esc":
+		m.mode = "normal"
+		m.status, m.statErr = "cancelled", false
+		return m, nil
+	case "tab", "down":
+		f.setFocus((f.focus + 1) % len(f.fields))
+		return m, nil
+	case "shift+tab", "up":
+		f.setFocus((f.focus + len(f.fields) - 1) % len(f.fields))
+		return m, nil
+	case "left", "right":
+		if fl := &f.fields[f.focus]; fl.sel != nil {
+			d := 1
+			if msg.String() == "left" {
+				d = len(fl.sel) - 1
+			}
+			fl.selIx = (fl.selIx + d) % len(fl.sel)
+			return m, nil
+		}
+	case "enter":
+		return m.submitForm()
+	}
+	if f.fields[f.focus].sel == nil {
+		var cmd tea.Cmd
+		f.fields[f.focus].ti, cmd = f.fields[f.focus].ti.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m tuiModel) submitForm() (tea.Model, tea.Cmd) {
+	f := m.form
+	switch f.kind {
+	case "spawn":
+		name, branch, cmdline := f.val(0), f.val(2), f.val(3)
+		projPath := ""
+		if ix := f.fields[1].selIx; ix > 0 {
+			projPath = m.projects[ix-1].Path
+		}
+		if err := validName(name); err != nil {
+			m.status, m.statErr = err.Error(), true
+			return m, nil
+		}
+		if branch != "" && projPath == "" {
+			m.status, m.statErr = "a worktree needs a project — pick one (or clear branch)", true
+			return m, nil
+		}
+		argv := []string{"spawn", name}
+		switch {
+		case branch != "":
+			argv = append(argv, "--repo", projPath, "-b", branch)
+		case projPath != "":
+			argv = append(argv, "-C", projPath)
+		}
+		if cmdline != "" {
+			argv = append(argv, "--")
+			argv = append(argv, strings.Fields(cmdline)...)
+		}
+		m.mode = "normal"
+		m.pendingSelect = name
+		m.status, m.statErr = "spawning "+name+"…", false
+		return m, runSelf("spawn", argv...)
+	case "project":
+		path, name := f.val(0), f.val(1)
+		if path == "" {
+			m.status, m.statErr = "path is required", true
+			return m, nil
+		}
+		argv := []string{"project", "add", path}
+		if name != "" {
+			argv = append(argv, "--name", name)
+		}
+		m.mode = "normal"
+		return m, runSelf("project add", argv...)
+	}
+	m.mode = "normal"
+	return m, nil
+}
+
 func (m *tuiModel) openPrompt(p promptSpec) {
 	m.mode = "prompt"
 	m.prompt = p
@@ -228,53 +570,42 @@ func (m *tuiModel) openPrompt(p promptSpec) {
 }
 
 func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	name := selName(&m)
+	sel := m.selected()
+	name := ""
+	if sel != nil {
+		name = sel.Name
+	}
 	switch msg.String() {
 	case "q", "ctrl+c":
+		m.quitKill = true
 		return m, tea.Quit
 
+	case "d":
+		leaveWorkspace()
+		return m, nil
+
 	case "j", "down":
-		if m.sel < len(m.rows)-1 {
-			m.sel++
-		}
-		m.seq++
-		return m, refreshCmd(selName(&m), m.seq, m.previewLines())
+		m.moveSel(1)
+		m.retarget()
+		return m, nil
 	case "k", "up":
-		if m.sel > 0 {
-			m.sel--
-		}
-		m.seq++
-		return m, refreshCmd(selName(&m), m.seq, m.previewLines())
+		m.moveSel(-1)
+		m.retarget()
+		return m, nil
 
 	case "g":
 		m.seq++
-		return m, refreshCmd(name, m.seq, m.previewLines())
+		return m, refreshCmd(m.seq)
 
-	case "enter":
-		if name == "" {
+	case "enter", "l", "tab":
+		if sel == nil {
 			return m, nil
 		}
-		sess := "=" + m.rows[m.sel].Tmux
-		if m.rows[m.sel].State == "dead" {
+		if sel.State == "dead" {
 			return m, runSelf("resume", "resume", name)
 		}
-		if os.Getenv("TMUX") != "" {
-			out, err := tmuxRun("switch-client", "-t", sess)
-			if err != nil {
-				m.status, m.statErr = "switch-client: "+out, true
-			}
-			return m, nil
-		}
-		// standalone: hand the terminal to tmux attach, come back on detach
-		argv := []string{tmuxBin()}
-		if extra := os.Getenv("MUSTER_TMUX_ARGS"); extra != "" {
-			argv = append(argv, strings.Fields(extra)...)
-		}
-		argv = append(argv, "attach", "-t", sess)
-		c := exec.Command(argv[0], argv[1:]...)
-		return m, tea.ExecProcess(c, func(err error) tea.Msg {
-			return execDoneMsg{label: "attach", out: "returned to muster", err: err}
-		})
+		m.wp.focus()
+		return m, nil
 
 	case "s":
 		if name == "" {
@@ -282,7 +613,7 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		n := name
 		m.openPrompt(promptSpec{
-			label: "send " + n, placeholder: "message… (delivered when agent is idle)",
+			label: "send " + n, placeholder: "message… (delivered when idle)",
 			argv: func(t string) []string { return []string{"send", n, t} },
 		})
 		return m, nil
@@ -294,11 +625,18 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 		return m, nil
 
-	case "S":
-		m.openPrompt(promptSpec{
-			label: "spawn", placeholder: "name [-C dir | --repo dir -b branch] [-- cmd…]",
-			argv: func(t string) []string { return append([]string{"spawn"}, strings.Fields(t)...) },
-		})
+	case "S", "a":
+		pre := ""
+		if sel != nil {
+			pre = projectFor(m.projects, *sel)
+		}
+		m.form = newSpawnForm(m.projects, pre)
+		m.mode = "form"
+		return m, nil
+
+	case "P":
+		m.form = newProjectForm()
+		m.mode = "form"
 		return m, nil
 
 	case "c":
@@ -363,35 +701,31 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-const helpText = `j/k or ↑/↓   select agent          enter   attach (resume if dead)
-s            send message          b       broadcast to all
-S            spawn agent           K       kill (asks y / y --rm)
-r / R        resume sel / all      i       inbox (peek, no cursor move)
-c / C        schedule / list       g       refresh now
-?            this help             q       quit
+const helpText = `sidebar
+ j/k ↑/↓  select agent
+ enter/l  type into the agent →
+ S or a   spawn (form)
+ P        add project
+ s / b    send msg / broadcast
+ K        kill (y / y --rm)
+ r / R    resume sel / all
+ i        inbox   c/C schedule/list
+ g        refresh
+ d        leave (fleet keeps running)
+ q        quit workspace
 
-prompts: enter submits · esc cancels
-everything here is also a CLI: muster <cmd> — see muster help`
+agent pane (right)
+ click it or press enter, then type
+ as normal — it IS the agent's
+ terminal, not a copy.
+ back here: click sidebar or C-b ←
+ scrollback: C-b C-b [
 
-// boxH is the content height of the two main boxes: total height minus
-// title(1), borders(2), status(1), help(1).
-func (m tuiModel) boxH() int {
-	n := m.h - 5
-	if n < 5 {
-		n = 5
-	}
-	return n
-}
+every action is also a CLI:
+ muster help`
 
-func (m tuiModel) previewLines() int {
-	n := m.boxH() - 3 // head + info + separator
-	if n < 5 {
-		n = 5
-	}
-	return n
-}
+// ---- view -------------------------------------------------------------------
 
-// clip truncates s to width w (rune-aware enough for our ASCII+glyph mix).
 func clip(s string, w int) string {
 	if w <= 1 {
 		return ""
@@ -401,14 +735,6 @@ func clip(s string, w int) string {
 		return s
 	}
 	return string(r[:w-1]) + "…"
-}
-
-func clipLines(s string, w int) string {
-	lines := strings.Split(s, "\n")
-	for i := range lines {
-		lines[i] = clip(lines[i], w)
-	}
-	return strings.Join(lines, "\n")
 }
 
 func firstLine(s string) string {
@@ -423,10 +749,17 @@ func (m tuiModel) View() string {
 	if m.w == 0 {
 		return "loading…"
 	}
-	body := lipgloss.JoinHorizontal(lipgloss.Top, m.viewSidebar(), m.viewMain())
-	bottom := m.viewBottom()
-	title := sTitle.Render(" muster ") + sDim.Render("· "+fmt.Sprintf("%d agents", len(m.rows))+" · mesh "+meshWord())
-	return title + "\n" + body + "\n" + bottom
+	title := sTitle.Render(" muster ") + sDim.Render(fmt.Sprintf("%d agents · mesh %s", len(m.rows), meshWord()))
+	var mid string
+	switch m.mode {
+	case "form":
+		mid = m.viewForm()
+	case "view":
+		mid = m.viewScroll()
+	default:
+		mid = m.viewList() + "\n" + m.viewDetail() + "\n" + m.viewButtons()
+	}
+	return title + "\n" + mid + "\n" + m.viewBottom()
 }
 
 var meshOK *bool
@@ -444,91 +777,186 @@ func meshWord() string {
 	return "off"
 }
 
-func (m tuiModel) viewSidebar() string {
-	h := m.boxH()
-	var b strings.Builder
-	if len(m.rows) == 0 {
-		b.WriteString(sDim.Render("no agents\n\nS to spawn"))
+func (m tuiModel) viewList() string {
+	h := m.listH()
+	lines := make([]string, 0, h)
+	if len(m.items) == 0 {
+		lines = append(lines, "", sDim.Render("  no agents yet"), "", sDim.Render("  press a (or click + agent)"), sDim.Render("  to spawn your first one"))
 	}
-	for i, r := range m.rows {
-		glyph := stateStyle(r.State).Render(stateGlyph(r.State))
-		unread := ""
-		if r.Unread > 0 {
-			b := lipgloss.NewStyle().Foreground(cWorking)
-			unread = b.Render(fmt.Sprintf(" ✉%d", r.Unread))
-		}
-		name := r.Name
-		if len(name) > 14 {
-			name = name[:13] + "…"
-		}
-		line1 := fmt.Sprintf("%s %-14s%s", glyph, name, unread)
-		harness := r.Harness
-		if harness == "" {
-			harness = "shell"
-		}
-		line2 := "   " + sDim.Render(fmt.Sprintf("%s · %s · %s", r.State, harness, r.Age))
-		if i == m.sel {
-			line1 = sSelected.Render(fmt.Sprintf(" %s %-14s", stateGlyph(r.State), name)) + unread
-		}
-		b.WriteString(line1 + "\n" + line2 + "\n")
+	for i := m.scroll; i < len(m.items) && len(lines) < h; i++ {
+		lines = append(lines, m.renderItem(i))
 	}
-	return sBorder.Width(sidebarW).Height(h).Render(strings.TrimRight(b.String(), "\n"))
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
-func (m tuiModel) viewMain() string {
-	w := m.w - sidebarW - 4
-	if w < 20 {
-		w = 20
+func (m tuiModel) renderItem(i int) string {
+	it := m.items[i]
+	w := sidebarW - 1
+	if it.kind == "proj" {
+		name := it.projName
+		if name == "" {
+			name = "unassigned"
+		}
+		label := clip(name, w-6)
+		pad := w - len([]rune(label)) - 4
+		if pad < 1 {
+			pad = 1
+		}
+		return sProj.Render("▍"+label) + strings.Repeat(" ", pad) + sDim.Render("+")
 	}
-	h := m.boxH()
+	r := it.row
+	glyph := stateGlyph(r.State)
+	name := clip(r.Name, 16)
+	unread := ""
+	if r.Unread > 0 {
+		unread = fmt.Sprintf("✉%d", r.Unread)
+	}
+	right := strings.TrimSpace(unread + " " + r.Age)
+	body := fmt.Sprintf(" %s %-16s %*s", glyph, name, w-22, right)
+	if r.Name == m.selName {
+		return sSelected.Render(clip(body, w))
+	}
+	line := " " + stateStyle(r.State).Render(glyph) + " " + fmt.Sprintf("%-16s ", name)
+	if unread != "" {
+		line += lipgloss.NewStyle().Foreground(cWorking).Render(fmt.Sprintf("%*s", w-22, right))
+	} else {
+		line += sDim.Render(fmt.Sprintf("%*s", w-22, right))
+	}
+	return line
+}
 
-	if m.mode == "view" {
-		return sBorder.Width(w).Height(h).Render(sTitle.Render(m.viewTitle) + "\n\n" + m.viewBody)
+func (m tuiModel) viewDetail() string {
+	w := sidebarW - 2
+	sep := sDim.Render(strings.Repeat("─", w))
+	r := m.selected()
+	if r == nil {
+		return sep + "\n\n\n\n"
 	}
-
-	if len(m.rows) == 0 {
-		return sBorder.Width(w).Height(h).Render(sDim.Render("spawn your first agent: press S\n\nname [-C dir | --repo dir -b branch] [-- cmd…]\ndefault cmd: $MUSTER_DEFAULT_CMD or claude"))
+	harness := r.Harness
+	if harness == "" {
+		harness = "shell"
 	}
-	r := m.rows[m.sel]
-	head := stateStyle(r.State).Bold(true).Render(r.Name) +
-		sDim.Render(clip("  "+r.State+" · "+r.Cmd, w-len([]rune(r.Name))-2))
-	infoTxt := clip(collapseHome(r.Dir), w-2)
-	info := sDim.Render(infoTxt)
+	l1 := stateStyle(r.State).Bold(true).Render(clip(r.Name, 18)) + sDim.Render(" · "+r.State+" · "+harness)
+	l2 := sDim.Render(clip(collapseHome(r.Dir), w))
+	l3 := ""
+	if r.Branch != "" {
+		l3 = sDim.Render(clip("⎇ "+r.Branch, w))
+	}
+	l4 := sDim.Render(clip("$ "+r.Cmd, w))
 	if r.Reason != "" && r.Reason != "heartbeat" {
-		info = sDim.Render(clip(infoTxt, w-len([]rune(r.Reason))-6)) + "  " + sErr.Render("("+clip(r.Reason, 40)+")")
+		l3 = sErr.Render(clip(r.Reason, w))
 	}
-	sep := sDim.Render(strings.Repeat("─", max(0, w-2)))
-	prev := clipLines(m.preview, w-2)
-	if r.State == "dead" {
-		prev = sDim.Render("agent is dead — enter or r to resume with its exact original command:\n\n  " + clip(r.Cmd, w-4))
+	return sep + "\n" + l1 + "\n" + l2 + "\n" + l3 + "\n" + l4
+}
+
+// button extents are fixed: " [+ agent] [+ project] "
+const btnAgent = "[+ agent]"
+const btnProject = "[+ project]"
+
+func (m tuiModel) viewButtons() string {
+	return " " + sButton.Render(btnAgent) + " " + sButton.Render(btnProject)
+}
+
+func hitButton(x int) string {
+	a0, a1 := 1, 1+len(btnAgent)
+	p0, p1 := a1+1, a1+1+len(btnProject)
+	switch {
+	case x >= a0 && x < a1:
+		return "agent"
+	case x >= p0 && x < p1:
+		return "project"
 	}
-	return sBorder.Width(w).Height(h).Render(head + "\n" + info + "\n" + sep + "\n" + prev)
+	return ""
+}
+
+func (m tuiModel) viewForm() string {
+	f := m.form
+	h := m.listH() + detailH + 1 // replaces list+detail+buttons
+	lines := []string{sTitle.Render(" " + f.title)}
+	for i := range f.fields {
+		fl := &f.fields[i]
+		cursor := "  "
+		lab := sDim.Render(fl.label)
+		if i == f.focus {
+			cursor = sTitle.Render("› ")
+			lab = sField.Render(fl.label)
+		}
+		lines = append(lines, cursor+lab)
+		if fl.sel != nil {
+			v := fl.sel[fl.selIx]
+			if i == f.focus {
+				lines = append(lines, "  ◂ "+sField.Render(clip(v, sidebarW-10))+" ▸")
+			} else {
+				lines = append(lines, "    "+clip(v, sidebarW-8))
+			}
+		} else {
+			lines = append(lines, "  "+fl.ti.View())
+		}
+	}
+	lines = append(lines, "", sDim.Render("  "+f.fields[f.focus].hint))
+	verb := "spawn"
+	if f.kind == "project" {
+		verb = "add"
+	}
+	lines = append(lines, "", sHelp.Render(" enter "+verb+" · tab next · esc cancel"))
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines[:h], "\n")
+}
+
+// formFieldAt maps a screen row to a form field index (label or input line).
+func (m tuiModel) formFieldAt(y int) int {
+	i := (y - 2) / 2 // title on y=1, each field = 2 lines
+	if m.form != nil && i >= 0 && i < len(m.form.fields) {
+		return i
+	}
+	return -1
+}
+
+func (m tuiModel) viewScroll() string {
+	h := m.listH() + detailH + 1 // replaces list+detail+buttons
+	lines := []string{sTitle.Render(" " + m.viewTitle)}
+	for _, l := range strings.Split(m.viewBody, "\n") {
+		lines = append(lines, clip(l, sidebarW-1))
+	}
+	lines = append(lines, "", sHelp.Render(" esc back"))
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m tuiModel) viewBottom() string {
 	if m.mode == "prompt" {
-		return sTitle.Render(" "+m.prompt.label+" › ") + m.input.View()
+		return sTitle.Render(" "+m.prompt.label+" › ") + m.input.View() + "\n" + sHelp.Render(" enter send · esc cancel")
 	}
 	st := m.status
 	style := sStatus
 	if m.statErr {
 		style = sErr
 	}
-	help := sHelp.Render("enter attach · s send · S spawn · K kill · r/R resume · i inbox · c/C cron · b broadcast · ? help · q quit")
-	return style.Render(" "+st) + "\n" + help
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+	help := sHelp.Render(" a spawn · P project · enter type · ? keys")
+	return style.Render(" "+clip(st, sidebarW-1)) + "\n" + help
 }
 
 func cmdTUI(args []string) int {
-	p := tea.NewProgram(newTUI(), tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	if !isEmbedded() {
+		return bootstrapWorkspace()
+	}
+	p := tea.NewProgram(newTUI(), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	final, err := p.Run()
+	if err != nil {
 		return fail(err)
+	}
+	if fm, ok := final.(tuiModel); ok && fm.quitKill {
+		quitWorkspace()
 	}
 	return 0
 }

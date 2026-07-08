@@ -1,107 +1,106 @@
 # STATUS — muster
 
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
-> `DESIGN.md` (decisions), `PLAN.md` (phases, all ✅), `RESEARCH.md` (why).
+> `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-08 (session 1b — MVP + full-screen TUI, all live tests passed)
+**Last updated:** 2026-07-08 (session 2 — workspace mode: live interactive
+agent pane, projects, mouse + forms. All E2E-tested headless.)
 
-## Session 1b addendum: the TUI
+## Session 2: the workspace (why the TUI changed shape)
 
-User feedback: "I should be able to run 'muster' and it opens a full
-terminal UI... agents should handle the cli commands; the UI hides ppz."
-Built `tui.go` (bubbletea v1.3.6 + bubbles + lipgloss — the only deps).
-`muster` with no args opens it; `muster ui` too.
+User feedback: couldn't type into the agent pane (it was a capture-pane
+preview); wanted clickable spawn/add-project; goal restated: **obfuscate
+the pipes/ppz complexity, keep the power** — jump in, everything at your
+fingertips, no commands to remember.
 
-- Layout: sidebar (state glyph, name, unread ✉ badge, state·harness·age)
-  + main panel (header, dir, live `tmux capture-pane` preview of the
-  selected agent, 2s tick). Bottom: status line + key help / prompt input.
-- Every action self-execs the muster CLI (`runSelf`) so UI and CLI can
-  never disagree. Keys: j/k, enter=attach (switch-client inside tmux,
-  tea.ExecProcess `tmux attach` outside; on dead agent = resume), s send,
-  b broadcast, S spawn, K kill (y / y --rm confirm), r/R resume, i inbox
-  view, c cron add, C schedules view, g refresh, ? help, q quit.
-- VISUAL TESTING METHOD (use this next time): run the TUI in a scratch
-  tmux (`tmux -L mstrtest -f /dev/null new-session -d -x 180 -y 45 -e
-  MUSTER_*=... ./muster`), drive with `send-keys`, read frames with
-  `capture-pane -p` (`-e` to check colors). Fake fleet states by editing
-  spec JSONs (harness/session_uuid) + writing status/<uuid>.json — zero
-  API cost. All flows verified this way at 170x42 and 80x24.
-- Known TUI gaps: switch-client untested with a real attached client
-  (needs a human); no scrollback in preview (attach for that); meshWord
-  cached per process; sidebar not scrollable past ~15 agents yet.
+What shipped (see DESIGN.md "Workspace mode" for rationale + rejected
+alternatives):
+
+- `muster` opens a dedicated `muster` tmux session: left = sidebar TUI
+  (38 cols), right = **the selected agent's real terminal** (nested
+  `TMUX= tmux attach` on the same server, retargeted via `switch-client
+  -c <pane_tty>` as you move). Typing there is typing into claude. No PTY
+  ownership — ground rule intact.
+- Sidebar groups agents by **project** (`projects.json`, `muster project
+  add|ls|rm`, auto-registered on `spawn --repo`). One line per agent
+  (glyph/name/unread/age), detail block below (dir, ⎇ branch, $ cmd,
+  block-reason), buttons `[+ agent] [+ project]`.
+- Mouse everywhere (workspace session has `mouse on`): click row =
+  select+retarget, click right pane = focus it and type, wheel scrolls,
+  buttons/forms clickable. Keyboard parity: `a`/`S` spawn form, `P`
+  project form, `enter` = type into agent (or resume if dead), `d` leave
+  workspace running, `q` quit it. Fleet always survives.
+- Spawn form: name / project selector (←/→) / branch / command. Branch ⇒
+  git worktree via existing `--repo -b` path — worktrees stay first-class.
+- Dead agent selected ⇒ right pane shows a resume-hint placeholder;
+  `enter`/`r` resumes (exact argv) and the pane re-attaches itself.
+
+E2E evidence (headless, scratch server `-L mstrtest` + scratch state dir):
+typed into the right pane and the text executed in the real `mstr-worker1`
+session; `j` and a synthetic SGR mouse click both retargeted the nested
+client (verified via `list-clients` session + pane_title); spawn form
+created `runner` with worktree `repoB__wt/feat-1` branch `mstr/feat-1`,
+grouped under its project and auto-selected; `[+ project]` button click →
+form → `projects.json` + new sidebar group; dead placeholder + enter-resume
+verified; layout correct at 170x42 and 80x24; `q` killed only the
+workspace. `go vet` + unit tests green.
+
+Gotchas fixed this session (also in CLAUDE.md/memory):
+- `set-option -t =name` fails, needs `=name:` (same as send-keys). Was
+  silently skipping `status off` / `mouse on`.
+- Replacing `~/.local/bin/muster` in place ⇒ macOS SIGKILLs the binary
+  (signature cache). `rm` first, then copy.
+- tmux `pane-border-status top` eats a row: pane_height = window height−1.
 
 ## What this is
 
 tmux-first agent-army manager on the ppz mesh, built to surpass herdr for
-keyboard/tmux users. Single Go binary, zero deps, no daemon. See README.md.
+keyboard/tmux users. Single Go binary, zero deps beyond charmbracelet, no
+daemon. See README.md.
 
-## Where we are: MVP DONE and proven live
+## Where we are
 
-Every phase in PLAN.md is checked off, with real end-to-end evidence:
-
-1. **Faithful resume (the herdr #965 killer):** spawned real claude with
-   `--dangerously-skip-permissions --model haiku`, killed the tmux session,
-   `muster resume` → pane shows "bypass permissions on" AND recalled the
-   pre-restart codeword. Exact argv preserved; resume = argv + `--resume
-   <pre-pinned uuid>`.
-2. **Hooks status:** SessionStart/Stop/Notification hooks (via per-agent
-   `--settings`, user settings untouched) drive ⚙/✋/✔ in `muster ls`;
-   observed "blocked (Claude is waiting for your input)" live.
-3. **Mesh loop:** `muster send worker2 "TASK…"` → ppz's built-in pump
-   nudged the idle agent → it ran `ppz subs read` itself, created the
-   requested file, replied `ppz send mstrctl 'DONE …'`; ack:read receipts
-   arrived with correct in_reply_to.
-4. **Scheduling:** `muster cron add worker2 --at +20s "append cron-fired…"`
-   → ppz SERVER fired it, pump nudged, agent did it unattended. `--every`
-   and `--cron` use the same path.
-5. **Worktrees:** `spawn --repo X -b feature-x` → sibling `X__wt/feature-x`
-   on branch `mstr/feature-x`, `.worktreeinclude` copied `.env`;
-   `kill --rm` refused while dirty, `--force` override works.
+MVP (session 1) proven live: faithful resume (exact argv + pre-pinned
+`--resume` uuid), hooks status (⚙/✋/✔/☠, no scraping), mesh send/reply
+via ppz's own nudge pump, server-side cron, guarded worktrees. Session 2
+added the workspace UI above. **New binary installed to ~/.local/bin/muster
+(doctor: all ok, sees the user's 2 live agents).**
 
 ## Environment on this machine
 
-- muster repo: `Repos/pipe-terminal/muster` (git, committed). Build:
-  `go build -o muster .`
-- Local ppz mesh RUNNING: `ppz-server` with dev-login, NATS 127.0.0.1:4222,
-  Postgres db `ppz` on homebrew postgresql@14. State:
-  `muster/.dev/ppz-local/` (`nats.env` = trust root, DO NOT regenerate;
-  `seed/key-alpha.txt` = login key). **Restart after reboot:
-  `.dev/ppz-local/start.sh`** (idempotent, verified). CLI logged in as org
-  `alpha`; `ppz` symlinked at `~/.local/bin/ppz` (→
-  `Repos/pipe-terminal/ppz/bin/ppz`, built from source v0.51).
-- **The user is live on it**: agents `pixel` + `tester` spawned via the
-  installed binary at ~20:24 on 2026-07-08, hooks firing into the real
-  state dir (`~/.local/share/muster/`), hooks-settings pointing at
-  `~/.local/bin/muster hook`. Don't clobber their fleet when testing —
-  use MUSTER_STATE_DIR + a scratch tmux socket (see CLAUDE.md).
-- Test artifacts (scratch, disposable): tmux server `-L mstrtest`,
-  MUSTER_STATE_DIR under the session scratchpad, agents worker1/worker2/
-  dummy1. Killed at session end; specs remain in the scratch state dir.
+- muster repo: `Repos/pipe-terminal/muster`. Build: `go build -o muster .`
+- Local ppz mesh RUNNING: `ppz-server` dev-login :8080, NATS 127.0.0.1:4222,
+  Postgres db `ppz` (homebrew postgresql@14). State: `muster/.dev/ppz-local/`
+  (`nats.env` = trust root, NEVER regenerate; `seed/key-alpha.txt` = login
+  key). Restart after reboot: `.dev/ppz-local/start.sh`. `ppz` symlinked at
+  `~/.local/bin/ppz` (→ `Repos/pipe-terminal/ppz/bin/ppz`).
+- **User's live fleet**: `pixel` + `tester` in the real state dir
+  (`~/.local/share/muster/`). Their sessions predate `status off`-at-spawn;
+  retarget now silences them idempotently. Don't clobber — test with
+  MUSTER_STATE_DIR + `-L mstrtest` (see CLAUDE.md).
 
 ## Known issues / next session TODO
 
-- **menu untested visually** (display-menu needs an attached tmux client;
-  errors gracefully otherwise). Try it interactively: bind
-  `run-shell 'muster menu'`.
-- **tmux-resurrect interplay:** if the user's resurrect/continuum restores
-  `mstr-*` sessions as dead shells after reboot, `muster resume` will say
-  "already running". Advice: kill stale mstr-* first or exclude them from
-  resurrect. Consider auto-detecting a shell-only mstr session.
-- **Refusing-agent nag loop:** ppz pump re-nags every 30s while unread
-  remains; an agent that refuses to `ppz subs read` loops (seen once with a
-  pre-briefing poisoned conversation; fresh spawns fine). Escape hatch:
-  `PPZ_SESSION=<handle> ppz subs read` drains manually.
-- `muster ls` unread counts read the MESH cursor of mstrctl, not the
-  agent's own cursor (close enough for a glance; revisit).
-- Post-MVP backlog lives at the bottom of PLAN.md (bubbletea dashboard,
-  status-right segment, agent-teams interop, adopt, jj, `muster done`).
+- **Workspace untested with a real attached human client** (all E2E was
+  headless send-keys/capture-pane): mouse-focus of the right pane, drag,
+  paste, and the `switch-client -l` path of `d` need a human eyeball.
+- Sidebar scrolls but has no scrollbar/indicator when items overflow.
+- Forms: no ppz on/off toggle (always mesh when available), command field
+  splits on spaces (no shell quoting) — fine for `claude --flags`, not for
+  quoted args. `muster spawn` CLI handles those cases.
+- Inbox/schedules/help render clipped in the 38-col sidebar; a tmux
+  display-popup would read better (untestable headless — deferred).
+- tmux-resurrect interplay: stale `mstr-*` shells after reboot still make
+  `resume` say "already running" (pre-existing; auto-detect someday).
+- Refusing-agent nag loop + `ls` unread-cursor caveats: unchanged from
+  session 1 (see git history of this file for detail).
 
 ## Candidate next steps (in value order)
 
-1. Dogfood on the real tmux server (install muster to ~/.local/bin, bind
-   menu key, spawn a real work agent).
-2. `muster done <name>`: merge branch → kill → rm worktree (workmux-style).
-3. Status-right segment (`muster status --format tmux`) for always-visible
-   fleet health.
-4. Point the mesh at hosted pipescloud.io instead of the local server for
-   true always-on schedules.
+1. Human dogfood pass on the workspace (real fleet, real mouse, real
+   claude sessions) — then fix what feels off.
+2. `muster done <name>`: merge branch → kill → rm worktree (workmux-style)
+   — natural button next to `[+ agent]` once it exists.
+3. Status-right segment (`muster status --format tmux`) for fleet health
+   outside the workspace.
+4. Point the mesh at hosted pipescloud.io for true always-on schedules.

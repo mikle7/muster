@@ -26,11 +26,24 @@ behind every decision).
 - Isolated tmux: `export MUSTER_TMUX_ARGS="-L mstrtest -f /dev/null"`,
   scratch state: `export MUSTER_STATE_DIR=/tmp/...`. The user's real tmux
   auto-restores sessions via continuum — never test on their server.
-- Visual TUI testing: run `./muster` in a detached scratch tmux, drive
-  with `tmux send-keys`, read frames with `capture-pane -p` (`-e` for
-  colors). Fake fleet states by editing `agents/*.json`
-  (harness/session_uuid) and writing `status/<uuid>.json` by hand.
+- Visual TUI testing: with the scratch env set, `./muster ui` bootstraps
+  the `muster` workspace session headless (the final self-attach fails
+  without a tty — expected). `resize-window -t '=muster:' -x 170 -y 42`,
+  drive the SIDEBAR pane with `send-keys`, type into agents via the RIGHT
+  pane, read frames with `capture-pane -p` (`-e` for colors). Mouse events:
+  send SGR literals, e.g. `send-keys -l "$(printf '\033[<0;5;3M\033[<0;5;3m')"`
+  (x=5,y=3, 1-based). Verify retargeting via `list-clients -F
+  '#{client_session}'` + `#{pane_title}`. Fake fleet states by editing
+  `agents/*.json` and writing `status/<uuid>.json` by hand.
 - Real-claude E2E only when needed: use `--model haiku`, tiny prompts.
+
+## tmux gotchas (hard-won)
+
+- Exact-match targets: `has-session -t =name` is fine, but `send-keys`
+  and `set-option` reject bare `=name` — use `=name:`.
+- `pane-border-status top` costs one row: pane_height = window height − 1.
+- Replacing `~/.local/bin/muster` in place gets the binary SIGKILLed on
+  macOS (signature cache) — `rm` first, then copy.
 
 ## Local ppz mesh (dev)
 

@@ -143,13 +143,50 @@ conversation; fresh spawns behave).
 - Tests: unit tests for spec/compose/resume-transform logic (pure funcs),
   plus a live smoke script.
 
+## Workspace mode (session 2 — the interactive UI rethink)
+
+User feedback on the session-1 TUI: "you can't type in the claude window
+on the right… it should work as normal", plus clickable spawn/add-project.
+
+**Decision: the right pane is tmux itself, not a widget.** `muster` now
+bootstraps a dedicated `muster` tmux session: pane 0 is the sidebar TUI
+(fixed 38 cols), pane 1 runs `TMUX= tmux attach -t =mstr-<sel>` — a real
+nested client on the same server. Moving the selection retargets that
+client with `switch-client -c <pane_tty>` (respawn-pane when it died).
+Typing/scrolling/pasting in the right pane IS the agent's terminal.
+
+Rejected alternatives, for the record:
+- *Key-forwarding into a capture-pane preview* (send-keys per keystroke +
+  fast tick): echo latency, no mouse, cursor artifacts — a worse terminal.
+- *Owning a PTY + vt emulation in bubbletea*: herdr's approach, and the
+  ground rule exists precisely to avoid it.
+
+Consequences / details:
+- Workspace-scoped options only (`mouse on`, `status off`, pane titles);
+  set with target `=name:` — **bare `=name` is rejected by set-option**,
+  same gotcha as send-keys. Agent sessions get `status off` at spawn and
+  (idempotently) at retarget, so old fleets render clean too.
+- `q` kills the workspace session (fleet survives); `d` sends clients
+  home (`switch-client -l`, detach fallback) and leaves it running.
+- Stale `muster` sessions (continuum-restored shells) are detected by
+  "no pane runs the muster binary" and recreated.
+- Mouse: bubbletea `WithMouseCellMotion`; one line per sidebar item keeps
+  hit-testing pure arithmetic (no zone lib). Buttons `[+ agent]`
+  `[+ project]`; forms (spawn: name/project/branch/command; project:
+  path/name) replace the list in the left pane. Spawning with a branch =
+  worktree; the projects registry (`projects.json`, `muster project`)
+  groups the sidebar and feeds the form's project selector.
+- Inner-tmux escape hatches: outer copy-mode sees only the visible inner
+  screen; real scrollback is `C-b C-b [`. Documented in `?` help.
+
 ## Non-goals (MVP)
 
 - No Windows. No zellij backend (interface kept thin enough to add).
 - No screen-scraping detection manifests.
-- No plugin system, no mouse UI, no remote-server mode of our own (ppz
+- No plugin system, no remote-server mode of our own (ppz
   hosted mesh already covers cross-host messaging; `ssh + tmux attach`
-  covers remote attach).
+  covers remote attach). (Mouse UI: shipped in session 2 after all —
+  workspace mode made it natural.)
 - No agent-teams interop yet (post-MVP; noted in PLAN).
 
 ## Naming

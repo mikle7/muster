@@ -21,6 +21,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   menu                    tmux popup picker (bind a key to this)
   resume <name>|--all     restart dead agents with their EXACT original command
   kill <name> [--rm]      kill session; --rm also removes worktree+spec (guarded)
+  project add|ls|rm       register repos/dirs — the UI groups agents by project
 
   send <name> <text>      message an agent over ppz (delivered when idle)
   broadcast <text>        message all live agents
@@ -43,7 +44,7 @@ func main() {
 		"ui": cmdTUI, "spawn": cmdSpawn, "ls": cmdLs, "attach": cmdAttach, "menu": cmdMenu,
 		"resume": cmdResume, "kill": cmdKill,
 		"send": cmdSend, "broadcast": cmdBroadcast, "inbox": cmdInbox,
-		"cron": cmdCron,
+		"cron": cmdCron, "project": cmdProject,
 		"init": cmdInit, "doctor": cmdDoctor, "hook": cmdHook,
 	}
 	if os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h" {

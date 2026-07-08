@@ -85,6 +85,7 @@ func cmdSpawn(args []string) int {
 		abs, _ := filepath.Abs(*repo)
 		spec.Repo, spec.Worktree, spec.Branch, spec.Dir = abs, wt, fb, wt
 		fmt.Printf("worktree %s (branch %s)\n", wt, fb)
+		_, _ = addProject(abs, "") // idempotent: repos you spawn into show up in the UI
 	case *repo != "" || *branch != "":
 		return fail(errf("--repo and -b go together"))
 	case *dir != "":
@@ -158,6 +159,10 @@ func launch(spec *AgentSpec, resume, noPpz bool) int {
 	if err := tmuxNewSession(spec.TmuxSession, spec.Dir, cmd, env); err != nil {
 		return fail(err)
 	}
+	// no status bar in agent sessions — they render inside the muster
+	// workspace pane, where a second bar is just noise. (=name: — bare
+	// =name is rejected by set-option, same gotcha as send-keys.)
+	_, _ = tmuxRun("set-option", "-t", "="+spec.TmuxSession+":", "status", "off")
 	if err := saveSpec(spec); err != nil {
 		_ = tmuxKillSession(spec.TmuxSession)
 		return fail(err)
@@ -178,6 +183,8 @@ type lsRow struct {
 	Reason  string `json:"reason,omitempty"`
 	Harness string `json:"harness,omitempty"`
 	Dir     string `json:"dir"`
+	Repo    string `json:"repo,omitempty"`
+	Branch  string `json:"branch,omitempty"`
 	Tmux    string `json:"tmux"`
 	Ppz     string `json:"ppz,omitempty"`
 	Unread  int    `json:"unread"`
@@ -197,7 +204,7 @@ func gatherRows() ([]lsRow, error) {
 		state, reason := liveState(s, hb)
 		rows = append(rows, lsRow{
 			Name: s.Name, State: state, Reason: reason, Harness: s.Harness,
-			Dir: s.Dir, Tmux: s.TmuxSession, Ppz: s.PpzHandle,
+			Dir: s.Dir, Repo: s.Repo, Branch: s.Branch, Tmux: s.TmuxSession, Ppz: s.PpzHandle,
 			Unread: unread[s.PpzHandle], Age: fmtAge(s.CreatedAt), Cmd: shJoin(s.Argv),
 		})
 	}

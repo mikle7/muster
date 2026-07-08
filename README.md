@@ -55,26 +55,40 @@ heartbeats, and remote terminal watch.
 
 ## The UI
 
-Just run `muster`. Full-screen, keyboard-only:
+Just run `muster`. It opens the **workspace**: a dedicated tmux session
+with a sidebar on the left and the *selected agent's real terminal* on the
+right — not a preview, not a wrapper. Click it (or press `enter`) and type
+into Claude exactly as if you'd attached. Keyboard and mouse both work.
 
 ```
- muster · 4 agents · mesh ok
-╭─ agents ─────────────────╮╭─ api-fix · working ────────────────────────────╮
-│ ⚙ api-fix                ││ api-fix  working · claude --dangerously-skip…  │
-│    working · claude · 2m ││ ~/code/api__wt/fix-auth                        │
-│ ✋ docs           ✉1     ││ ───────────────────────────────────────────    │
-│    blocked · claude · 2m ││ ⏺ Write(src/auth.ts) — patching token refresh  │
-│ ✔ review                 ││ ⏺ Bash(npm test) …                             │
-│    idle · claude · 1m    ││   (live tmux pane preview)                     │
-╰──────────────────────────╯╰────────────────────────────────────────────────╯
- sent to docs — ppz nudges the agent when it goes idle
- enter attach · s send · S spawn · K kill · r/R resume · i inbox · c/C cron · b broadcast · ? help · q quit
+ muster 4 agents · mesh ok         │ ╭ api-fix ────────────────────────────────
+▍api                             + │
+ ⚙ api-fix                     2m  │ > also bump the changelog when you're done
+ ✔ review                      1m  │
+▍docs                            + │ ⏺ Write(src/auth.ts) — patching token…
+ ✋ docs                   ✉1  2m  │ ⏺ Bash(npm test) …
+────────────────────────────────── │
+api-fix · working · claude         │   (the agent's ACTUAL tmux session —
+~/code/api__wt/fix-auth            │    type here, scroll here, it's live)
+⎇ mstr/fix-auth                    │
+$ claude --dangerously-skip-perm…  │
+ [+ agent] [+ project]             │
+ spawn: worktree ~/code/api__wt…   │
+ a spawn · P project · enter type  │
 ```
 
-Every pipes command is a keystroke — no ppz syntax to remember: `s` send,
-`b` broadcast, `i` peek inbox, `c` schedule, `C` list schedules. `enter`
-attaches (tmux switch-client, so detaching drops you back where you were);
-on a dead agent `enter` resumes it with its exact original command.
+The sidebar groups agents by **project** (registered repos — `[+ project]`
+or `muster project add`). `[+ agent]` (or `a`) opens a spawn form: name,
+project, optional branch — a branch gets its own git worktree, so parallel
+tasks on one repo never collide. Every pipes command is still a keystroke —
+no ppz syntax to remember: `s` send, `b` broadcast, `i` peek inbox, `c`
+schedule, `C` list schedules, `enter` on a dead agent resumes it with its
+exact original command. `d` leaves the workspace running; `q` quits it
+(agents keep running either way).
+
+Under the hood the right pane is a nested tmux client on the same server
+(`switch-client` retargets it as you move the selection) — muster still
+never owns a PTY, and your tmux config is untouched.
 
 ## Commands
 
@@ -85,6 +99,7 @@ on a dead agent `enter` resumes it with its exact original command.
 | `attach <name>` / `menu` | jump to an agent / tmux popup picker |
 | `resume <name> \| --all` | restart dead agents exactly as launched |
 | `kill <name> [--rm [--force]]` | stop; optionally remove worktree (dirty-guarded) |
+| `project add <path> [--name n]\|ls\|rm` | register repos — the UI groups agents by project |
 | `send` / `broadcast` / `inbox` | message agents over the mesh |
 | `cron add\|ls\|rm` | durable scheduled prompts (`--every 4h`, `--cron "0 9 * * 1"`, `--at +10m`) |
 | `init` / `doctor` / `hook` | setup, checks, hook sink (internal) |
