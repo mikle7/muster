@@ -960,12 +960,26 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.wp.terminal(dir)
 		return m, nil
 
-	case "v": // open a file mentioned on the agent's screen
+	case "v": // pick from files mentioned on the agent's screen (v then 1-9)
 		if sel == nil || sel.State == "dead" {
 			m.status, m.statErr = "select a live agent first", true
 			return m, nil
 		}
 		fileMenu(sel.Name, m.wp.right)
+		return m, nil
+
+	case "V": // open the most recently mentioned file — no menu
+		if sel == nil || sel.State == "dead" {
+			m.status, m.statErr = "select a live agent first", true
+			return m, nil
+		}
+		files := screenFiles(sel.Tmux, sel.Dir)
+		if len(files) == 0 {
+			m.status, m.statErr = "no file paths on "+sel.Name+"'s screen", true
+			return m, nil
+		}
+		openFile(m.wp.right, files[0])
+		m.status, m.statErr = "→ "+collapseHome(files[0])+" (q closes)", false
 		return m, nil
 
 	// F6…F10 arrive from right-click display-menu items (see rightClick)
@@ -1073,7 +1087,8 @@ const helpText = `sidebar
  enter/l  type into the agent →
  a / S    spawn (form)  P add project
  t        terminal in agent/space dir
- v        open a file off the screen
+ v        file menu (v then 1-9)
+ V        open latest mentioned file
  click a project = room chat (#proj)
  right-click  menu — works on BOTH
           panes; esc/click closes

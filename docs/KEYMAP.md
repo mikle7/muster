@@ -26,7 +26,8 @@ Design rules, in priority order:
 | a, S | spawn form (project preselected) | fleet |
 | P | add project (repo picker, filter-as-you-type) | fleet |
 | t | shell split in the agent's dir (space dir if none) | selected |
-| v | open a file mentioned on the agent's screen | selected |
+| v | file menu: files mentioned on the agent's screen — fully keyboard, `v` then `1`–`9`/`a`–`c` (or arrows + enter) | selected |
+| V | open the *most recently mentioned* file instantly, no menu | selected |
 | s | send message | selected |
 | b | broadcast | all live |
 | T | standup — every agent reports | all live |
@@ -84,5 +85,4 @@ prefix (this machine: C-a):
 
 - `/` filter agents by name (when fleets outgrow one screen)
 - `u` jump to the most attention-worthy agent (first blocked)
-- `V` full-screen file viewer (today: v then prefix z)
 - number keys 1–9: jump to Nth agent

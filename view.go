@@ -78,6 +78,17 @@ func viewerCmd(path string) string {
 	return "less -R " + q
 }
 
+// openFile renders path per viewerCmd: a pager split beside pane, or the OS
+// viewer for images.
+func openFile(pane, path string) {
+	v := viewerCmd(path)
+	if strings.HasPrefix(v, "open ") {
+		_, _ = tmuxRun("run-shell", "-b", v)
+		return
+	}
+	_, _ = tmuxRun("split-window", "-h", "-t", pane, v)
+}
+
 // fileMenu shows the scraped files for agent `name`; the chosen one opens in
 // a split of pane (or the OS viewer for images).
 func fileMenu(name, pane string) {
