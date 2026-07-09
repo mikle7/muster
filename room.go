@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -15,7 +16,9 @@ import (
 // every mesh message to any agent in the space (and to you from them),
 // rendered as one conversation. Clicking a project in the sidebar shows it
 // in the right pane (`muster room <project> --watch`). Read receipts (✓✓)
-// come from ppz ack:read envelopes.
+// come from ppz ack:read envelopes. A compose line at the bottom sends
+// whatever you type to every member's ppz handle at once — a real group
+// chat, not just a transcript + the T-key standup broadcast.
 
 type roomMsg struct {
 	t        time.Time
@@ -82,10 +85,12 @@ func roomName(h string) string {
 }
 
 var (
-	sRoomHead = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
-	sRoomFrom = lipgloss.NewStyle().Bold(true).Foreground(cWorking)
-	sRoomYou  = lipgloss.NewStyle().Bold(true).Foreground(cIdle)
-	sRoomTick = lipgloss.NewStyle().Foreground(cIdle)
+	sRoomHead   = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	sRoomFrom   = lipgloss.NewStyle().Bold(true).Foreground(cWorking)
+	sRoomYou    = lipgloss.NewStyle().Bold(true).Foreground(cIdle)
+	sRoomTick   = lipgloss.NewStyle().Foreground(cIdle)
+	sRoomPrompt = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	sRoomErr    = lipgloss.NewStyle().Foreground(cBlocked)
 )
 
 // renderRoom builds the whole transcript at width w.
@@ -101,7 +106,7 @@ func renderRoom(proj string, w int) string {
 	b.WriteString(sRoomHead.Render("#"+proj) + sDim.Render("  "+strings.Join(members, ", ")) + "\n")
 	b.WriteString(sDim.Render(strings.Repeat("─", w-1)) + "\n")
 	if len(msgs) == 0 {
-		b.WriteString(sDim.Render("\nno room traffic in the last 24h.\n\ns in the sidebar messages an agent, T runs a standup —\nagent↔agent chatter shows up here too.") + "\n")
+		b.WriteString(sDim.Render("\nno room traffic in the last 24h.\n\ntype below to message everyone here at once —\nagent↔agent chatter shows up here too.") + "\n")
 		return b.String()
 	}
 	body := lipgloss.NewStyle().Width(w - 8)
@@ -132,13 +137,16 @@ func renderRoom(proj string, w int) string {
 // ---- live viewer (runs inside the workspace's right pane) -------------------
 
 type roomModel struct {
-	proj   string
-	vp     viewport.Model
-	ready  bool
-	pinned bool // stick to the newest message unless the user scrolled up
+	proj    string
+	vp      viewport.Model
+	input   textinput.Model
+	ready   bool
+	pinned  bool   // stick to the newest message unless the user scrolled up
+	sendErr string // last send failure, cleared on the next keystroke
 }
 
 type roomTickMsg struct{ body string }
+type roomSentMsg struct{ err error }
 
 func roomTick(proj string, w int) tea.Cmd {
 	return tea.Tick(2*time.Second, func(time.Time) tea.Msg {
@@ -146,16 +154,52 @@ func roomTick(proj string, w int) tea.Cmd {
 	})
 }
 
+// refreshRoomCmd re-renders immediately (off the update loop, like roomTick)
+// so a message you send shows up without waiting for the next 2s tick.
+func refreshRoomCmd(proj string, w int) tea.Cmd {
+	return func() tea.Msg { return roomTickMsg{body: renderRoom(proj, w)} }
+}
+
+// sendRoomCmd fans text out to every room member's ppz handle — a group
+// chat, built entirely from ppz's per-handle send (ppz has no broadcast
+// pipe of its own, see docs/WIRE.md).
+func sendRoomCmd(proj, text string) tea.Cmd {
+	return func() tea.Msg {
+		n := 0
+		var err error
+		for _, s := range roomAgents(proj) {
+			if s.PpzHandle == "" {
+				continue
+			}
+			if e := ppzSend(s.PpzHandle, text); e != nil {
+				err = e
+				continue
+			}
+			n++
+		}
+		if n == 0 && err == nil {
+			err = errf("no agents on the mesh in this room")
+		}
+		return roomSentMsg{err: err}
+	}
+}
+
 func (m roomModel) Init() tea.Cmd { return nil }
 
 func (m roomModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.vp = viewport.New(msg.Width, msg.Height-1)
+		m.vp = viewport.New(msg.Width, msg.Height-2)
 		m.vp.SetContent(renderRoom(m.proj, msg.Width))
 		m.vp.GotoBottom()
+		m.input = textinput.New()
+		m.input.Prompt = "" // sRoomPrompt below renders our own "> "
+		m.input.Placeholder = "message everyone in #" + m.proj + "…"
+		m.input.CharLimit = 4000
+		m.input.Width = msg.Width - 4
+		m.input.Focus()
 		m.ready, m.pinned = true, true
-		return m, roomTick(m.proj, msg.Width)
+		return m, tea.Batch(roomTick(m.proj, msg.Width), textinput.Blink)
 	case roomTickMsg:
 		if !m.ready {
 			return m, nil
@@ -165,10 +209,40 @@ func (m roomModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.GotoBottom()
 		}
 		return m, roomTick(m.proj, m.vp.Width)
+	case roomSentMsg:
+		if msg.err != nil {
+			m.sendErr = msg.err.Error()
+			return m, nil
+		}
+		return m, refreshRoomCmd(m.proj, m.vp.Width)
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "esc", "ctrl+c":
+		switch msg.Type {
+		case tea.KeyCtrlC:
 			return m, tea.Quit
+		case tea.KeyEsc:
+			if m.input.Value() != "" {
+				m.input.SetValue("")
+				return m, nil
+			}
+			return m, tea.Quit
+		case tea.KeyEnter:
+			text := strings.TrimSpace(m.input.Value())
+			if text == "" {
+				return m, nil
+			}
+			m.input.SetValue("")
+			m.sendErr = ""
+			return m, sendRoomCmd(m.proj, text)
+		case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown:
+			var cmd tea.Cmd
+			m.vp, cmd = m.vp.Update(msg)
+			m.pinned = m.vp.AtBottom()
+			return m, cmd
+		default:
+			m.sendErr = ""
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
 		}
 	}
 	var cmd tea.Cmd
@@ -181,7 +255,12 @@ func (m roomModel) View() string {
 	if !m.ready {
 		return "…"
 	}
-	return m.vp.View() + "\n" + sHelp.Render(" ↑/↓ scroll · q close · select an agent in the sidebar to leave")
+	line := sRoomPrompt.Render("> ") + m.input.View()
+	if m.sendErr != "" {
+		line += "  " + sRoomErr.Render("send failed: "+m.sendErr)
+	}
+	help := " enter send · ↑/↓ pgup/pgdn scroll · esc/ctrl-c close"
+	return m.vp.View() + "\n" + line + "\n" + sHelp.Render(help)
 }
 
 func cmdRoom(args []string) int {

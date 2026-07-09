@@ -60,7 +60,10 @@ func ppzReady() bool {
 		return readyCache.ok
 	}
 	out, err := ppzCmd(ctlSession, "status").CombinedOutput()
-	readyCache.ok = err == nil && strings.Contains(string(out), "logged in")
+	// exact "daemon: logged in" — "daemon: not logged in" / "authentication
+	// error" both contain the bare substring "logged in" and were false
+	// positives here (ppz status has no --json form to check structurally).
+	readyCache.ok = err == nil && strings.Contains(string(out), "daemon: logged in")
 	readyCache.at = time.Now()
 	return readyCache.ok
 }

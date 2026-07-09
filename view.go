@@ -136,18 +136,26 @@ func cmdRmenu(args []string) int {
 		return 0
 	}
 	pane := args[0]
-	x, y := "C", "C" // fall back to centered if mouse coords didn't expand
-	if len(args) >= 3 {
-		if _, err := strconv.Atoi(args[1]); err == nil {
-			x = args[1]
-		}
-		if _, err := strconv.Atoi(args[2]); err == nil {
-			y = args[2]
-		}
-	}
-	tty, err := tmuxRun("display-message", "-p", "-t", pane, "#{pane_tty}")
+	out, err := tmuxRun("display-message", "-p", "-t", pane, "#{pane_tty}\t#{pane_left}\t#{pane_top}")
 	if err != nil {
 		return 0
+	}
+	tty, rest, _ := strings.Cut(out, "\t")
+	l, t, _ := strings.Cut(rest, "\t")
+	left, _ := strconv.Atoi(l)
+	top, _ := strconv.Atoi(t)
+	// #{mouse_x}/#{mouse_y} are pane-relative but display-menu -x/-y are
+	// client-absolute — unshifted, the menu opens sidebar-widths left of the
+	// pointer. +1 y sits the menu just under the pointer (numeric -y anchors
+	// the menu's bottom edge).
+	x, y := "C", "C" // fall back to centered if mouse coords didn't expand
+	if len(args) >= 3 {
+		if mx, err := strconv.Atoi(args[1]); err == nil {
+			x = strconv.Itoa(left + mx)
+		}
+		if my, err := strconv.Atoi(args[2]); err == nil {
+			y = strconv.Itoa(top + my + 1)
+		}
 	}
 	sess := ""
 	if out, err := tmuxRun("list-clients", "-F", "#{client_tty}\t#{client_session}"); err == nil {
@@ -172,6 +180,11 @@ func cmdRmenu(args []string) int {
 		"send message…", "s", "command-prompt -p '→ " + name + ":' " + shQuote(run("send "+name+" \"%%\"")),
 		"open a file…", "v", run("fmenu " + name + " " + pane),
 		"terminal here", "t", "split-window -v -l 12 -t " + pane + " -c " + shQuote(s.Dir),
+		"", "", "",
+		"split right", "l", "split-window -h -t " + pane + " -c " + shQuote(s.Dir),
+		"split down", "j", "split-window -v -t " + pane + " -c " + shQuote(s.Dir),
+		"split up", "u", "split-window -v -b -t " + pane + " -c " + shQuote(s.Dir),
+		"split left", "h", "split-window -h -b -t " + pane + " -c " + shQuote(s.Dir),
 		"zoom", "z", "resize-pane -Z -t " + pane,
 		"", "", "",
 		"inbox", "i", "display-popup -E -w 80% -h 70% " + shQuote("sh -c "+shQuote(self+" inbox "+name+`; printf '\n[enter to close] '; read -r _`)),

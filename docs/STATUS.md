@@ -163,9 +163,17 @@ selected agent's REAL terminal (nested tmux client) — see DESIGN.md.
 ## Known issues / next session TODO
 
 - **Human dogfood still pending** (all E2E is headless): real-mouse feel,
-  menu placement (rmenu uses raw #{mouse_x}/#{mouse_y}, sidebar guesses
-  +2 for the border row — both may need nudging), login-in-pane flow,
-  notification UX, room chat with a real multi-agent conversation.
+  login-in-pane flow, notification UX, room chat with a real multi-agent
+  conversation.
+- ~~rmenu placement~~ FIXED (session 5): `#{mouse_x}/#{mouse_y}` are
+  PANE-relative but `display-menu -x/-y` are client-absolute, so the agent
+  menu opened a sidebar-width left of the pointer. rmenu now adds
+  `#{pane_left}/#{pane_top}` (fetched in the existing display-message call);
+  numeric `-y` anchors the menu's BOTTOM edge. Also added herdr-style
+  split right/down/up/left (l/j/u/h) to the agent-pane menu — plain shell
+  in the agent's dir, focused (herdr semantics; the sidebar menu's splits
+  still pin extra views of the agent). Headless-verified: menu at pointer
+  in the right pane, split right spawns zsh at pane_left=120.
 - cmd+click on file paths is terminal-emulator territory (iTerm semantic
   history), not reachable from tmux — `v` / right-click is the muster way.
   glow isn't installed on this machine; .md falls back to bat (fine).
