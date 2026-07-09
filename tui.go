@@ -45,7 +45,7 @@ func stateStyle(state string) lipgloss.Style {
 	switch state {
 	case "working":
 		return lipgloss.NewStyle().Foreground(cWorking)
-	case "blocked":
+	case "blocked", "stalled":
 		return lipgloss.NewStyle().Foreground(cBlocked)
 	case "idle":
 		return lipgloss.NewStyle().Foreground(cIdle)
@@ -81,6 +81,13 @@ func meshCmd() tea.Cmd {
 	return func() tea.Msg { return meshMsg{body: meshBody()} }
 }
 
+// popupSelf runs a muster command in a tmux display-popup — full width for
+// output the 38-col sidebar would clip (inbox, recap). Enter closes.
+func popupSelf(argv string) {
+	sh := selfExe() + " " + argv + `; printf '\n[enter to close] '; read -r _`
+	_, _ = tmuxRun("display-popup", "-E", "-w", "80%", "-h", "70%", "sh -c "+shQuote(sh))
+}
+
 func runSelf(label string, argv ...string) tea.Cmd {
 	return func() tea.Msg {
 		out, err := exec.Command(selfExe(), argv...).CombinedOutput()
@@ -102,18 +109,40 @@ type sideItem struct {
 }
 
 // stateRank orders agents by how much they need you (herdr's priority sort).
+// stalled sits between blocked and working: probably needs a poke, not
+// certainly waiting.
 func stateRank(state string) int {
 	switch state {
 	case "blocked":
 		return 0
-	case "working":
+	case "stalled":
 		return 1
-	case "idle":
+	case "working":
 		return 2
+	case "idle":
+		return 3
 	case "dead", "ended":
-		return 4
+		return 5
 	}
-	return 3
+	return 4
+}
+
+// filterRows narrows the fleet by a `/` query — name, role, state, branch or
+// project dir, case-insensitive. "Search across all my agent tabs" is a
+// straight wishlist item from the research (fleets outgrow one screen fast).
+func filterRows(rows []lsRow, q string) []lsRow {
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q == "" {
+		return rows
+	}
+	var out []lsRow
+	for _, r := range rows {
+		hay := strings.ToLower(r.Name + " " + r.Role + " " + r.State + " " + r.Branch + " " + r.Dir)
+		if strings.Contains(hay, q) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // buildPriorityItems: flat list, most attention-worthy first — for triage
@@ -289,7 +318,8 @@ type tuiModel struct {
 	selName  string
 	scroll   int
 	w, h     int
-	byPrio   bool // o: sort by attention instead of project
+	byPrio   bool   // o: sort by attention instead of project
+	filter   string // /: narrows the fleet (name/role/state/branch/dir)
 
 	// context-menu target (set on right-click; consumed by F6/F7/F8,
 	// which tmux display-menu items send back to this pane)
@@ -430,10 +460,13 @@ func (m *tuiModel) retarget() {
 }
 
 func (m *tuiModel) rebuild() {
-	if m.byPrio {
-		m.items = buildPriorityItems(m.rows)
+	rows := filterRows(m.rows, m.filter)
+	if m.byPrio || m.filter != "" {
+		// a filtered view is a triage view: flat, attention first, no
+		// empty project headers
+		m.items = buildPriorityItems(rows)
 	} else {
-		m.items = buildItems(m.rows, m.projects, m.space)
+		m.items = buildItems(rows, m.projects, m.space)
 	}
 	ring := m.agentIdxs()
 	if m.pendingSelect != "" {
@@ -515,11 +548,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status, m.statErr = msg.label+": "+firstLine(msg.out+" "+msg.err.Error()), true
 		} else {
 			m.status, m.statErr = msg.label+": "+firstLine(msg.out), false
-			if msg.label == "inbox" || msg.label == "cron ls" {
-				m.mode, m.viewTitle, m.viewBody = "view", msg.label, msg.out
-				if msg.label == "cron ls" {
-					m.viewTitle = "schedules"
-				}
+			if msg.label == "cron ls" {
+				m.mode, m.viewTitle, m.viewBody = "view", "schedules", msg.out
 			}
 		}
 		m.seq++
@@ -536,6 +566,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateForm(msg)
 		case "pick":
 			return m.updatePick(msg)
+		case "filter":
+			return m.updateFilter(msg)
 		case "view":
 			switch msg.String() {
 			case "esc", "q", "enter":
@@ -662,20 +694,29 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		} else {
 			menu = append(menu, "type into agent", "t", self+"Enter")
 			if m.wp.right != "" {
+				wpin := func(dir string) string {
+					return "run-shell -b " + shQuote(shQuote(selfExe())+" wpin "+it.row.Name+" "+dir+" "+m.wp.right)
+				}
 				menu = append(menu,
-					"split right", "l", "split-window -h -d -t "+m.wp.right+" "+shQuote(attachCmd(it.row.Tmux)),
-					"split down", "j", "split-window -v -d -t "+m.wp.right+" "+shQuote(attachCmd(it.row.Tmux)),
-					"split left", "h", "split-window -h -b -d -t "+m.wp.right+" "+shQuote(attachCmd(it.row.Tmux)),
+					"split right", "l", wpin("right"),
+					"split down", "j", wpin("down"),
+					"split left", "h", wpin("left"),
 					"zoom", "z", "resize-pane -Z -t "+m.wp.right,
 					"", "", "")
 			}
 			menu = append(menu,
+				"recap", "e", self+"e",
 				"send message…", "s", self+"s",
 				"terminal here", "!", self+"t",
 				"open a file…", "v", self+"v",
 				"schedule…", "c", self+"c",
 				"inbox", "i", self+"i",
-				"kill…", "k", self+"K")
+				"", "", "",
+				"review handoff", "w", self+"w")
+			if it.row.Branch != "" {
+				menu = append(menu, "done (merge & clean)…", "D", self+"D")
+			}
+			menu = append(menu, "kill…", "k", self+"K")
 		}
 		_, _ = tmuxRun(menu...)
 		return m, nil
@@ -730,6 +771,30 @@ func (m tuiModel) updateMesh(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, runSelf("standup", "standup")
 	}
 	return m, nil
+}
+
+// updateFilter: live fleet filtering. Every keystroke narrows the list;
+// enter keeps the filter and returns to normal keys, esc clears it.
+func (m tuiModel) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = "normal"
+		m.filter = ""
+		m.rebuild()
+		m.status, m.statErr = "filter cleared", false
+		return m, nil
+	case "enter":
+		m.mode = "normal"
+		if m.filter != "" {
+			m.status, m.statErr = "filtered: "+m.filter+" — esc clears", false
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	m.filter = strings.TrimSpace(m.input.Value())
+	m.rebuild()
+	return m, cmd
 }
 
 func (m tuiModel) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -942,10 +1007,100 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "esc":
+		if m.filter != "" {
+			m.filter = ""
+			m.rebuild()
+			m.status, m.statErr = "filter cleared", false
+			return m, nil
+		}
 		if m.roomView != "" {
 			m.roomView = ""
 			m.retarget()
 		}
+		return m, nil
+
+	case "/":
+		m.mode = "filter"
+		m.input.Placeholder = "name, role, state, branch…"
+		m.input.SetValue(m.filter)
+		m.input.Focus()
+		return m, nil
+
+	case "u": // jump to whoever needs you most: blocked > stalled > unread
+		ring := m.agentIdxs()
+		best, bestKey := -1, 99
+		for _, idx := range ring {
+			r := m.items[idx].row
+			key := stateRank(r.State)
+			if key > 1 {
+				if r.Unread == 0 || r.State == "dead" {
+					continue
+				}
+				key = 2
+			}
+			if key < bestKey {
+				bestKey, best = key, idx
+			}
+		}
+		if best < 0 {
+			m.status, m.statErr = "nobody needs you — all quiet", false
+			return m, nil
+		}
+		m.selName = m.items[best].row.Name
+		m.roomView = ""
+		m.ensureVisible(best)
+		m.retarget()
+		return m, nil
+
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9": // jump to Nth agent
+		n := int(msg.String()[0] - '1')
+		ring := m.agentIdxs()
+		if n < len(ring) {
+			m.selName = m.items[ring[n]].row.Name
+			m.roomView = ""
+			m.ensureVisible(ring[n])
+			m.retarget()
+		}
+		return m, nil
+
+	case "e": // recap: the 10-second catch-up, full-width popup
+		if name == "" {
+			return m, nil
+		}
+		popupSelf("recap " + name)
+		return m, nil
+
+	case "w": // review handoff to a reviewer-role agent over the mesh
+		if name == "" {
+			return m, nil
+		}
+		return m, runSelf("review", "review", name)
+
+	case "D": // done: merge the worktree branch back & clean up
+		if sel == nil {
+			return m, nil
+		}
+		if sel.Branch == "" {
+			m.status, m.statErr = name+" has no worktree — done is for worktree agents", true
+			return m, nil
+		}
+		n := name
+		m.openPrompt(promptSpec{
+			label: "done " + n, placeholder: "y = merge into repo & clean up · y --squash",
+			argv: func(t string) []string {
+				if !strings.HasPrefix(t, "y") {
+					return []string{"ls"} // anything but y… = no-op
+				}
+				args := []string{"done", n}
+				if strings.Contains(t, "--squash") {
+					args = append(args, "--squash")
+				}
+				if strings.Contains(t, "--force") {
+					args = append(args, "--force")
+				}
+				return args
+			},
+		})
 		return m, nil
 
 	case "t": // quick shell in the agent's dir (or the space)
@@ -1036,11 +1191,12 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "T":
 		return m, runSelf("standup", "standup")
 
-	case "i":
+	case "i": // popup, not the sidebar — inboxes deserve more than 38 cols
 		if name == "" {
 			return m, nil
 		}
-		return m, runSelf("inbox", "inbox", name)
+		popupSelf("inbox " + name)
+		return m, nil
 
 	case "K":
 		if name == "" {
@@ -1083,8 +1239,11 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 const helpText = `sidebar
- j/k ↑/↓  select agent
+ j/k ↑/↓  select agent   1-9 jump
+ u        jump to who needs you
+ /        filter fleet (esc clears)
  enter/l  type into the agent →
+ e        recap: events, git, inbox
  a / S    spawn (form)  P add project
  t        terminal in agent/space dir
  v        file menu (v then 1-9)
@@ -1094,6 +1253,8 @@ const helpText = `sidebar
           panes; esc/click closes
  z        zoom agent pane
  s / b    send msg / broadcast
+ w        review handoff (reviewer role)
+ D        done: merge worktree & clean
  T        standup — all agents report
  M        pipes: team, messages, setup
  K        kill (y / y --rm)
@@ -1145,14 +1306,17 @@ func (m tuiModel) View() string {
 	if m.meshOK {
 		mesh = "pipes ok"
 	}
-	info := fmt.Sprintf("%d · %s", len(m.rows), mesh)
+	info := m.triageCounts() + " · " + mesh
 	if p, end := m.fiveHr(); p > 0 { // account-wide, freshest agent wins
 		info += fmt.Sprintf(" · 5h %d%%", int(p))
 		if end != "" {
 			info += "→" + end
 		}
 	}
-	title := sTitle.Render(" muster ") + sDim.Render(info)
+	if m.filter != "" {
+		info += " /" + m.filter
+	}
+	title := sTitle.Render(" muster ") + sDim.Render(clip(info, sidebarW-9))
 	var mid string
 	switch m.mode {
 	case "form":
@@ -1255,6 +1419,29 @@ self-hosting? see ppz docs/self-hosting`
 	return b.String()
 }
 
+// triageCounts is the header's who-needs-me glance: counts per state, worst
+// first, glyphs only ("✋1 ⌛1 ⚙3"). One look answers the fleet's #1 question.
+func (m tuiModel) triageCounts() string {
+	counts := map[string]int{}
+	for _, r := range m.rows {
+		counts[r.State]++
+	}
+	var parts []string
+	for _, st := range []string{"blocked", "stalled", "working", "idle", "unknown", "dead"} {
+		n := counts[st]
+		if st == "dead" {
+			n += counts["ended"]
+		}
+		if n > 0 {
+			parts = append(parts, fmt.Sprintf("%s%d", stateGlyph(st), n))
+		}
+	}
+	if len(parts) == 0 {
+		return "0 agents"
+	}
+	return strings.Join(parts, " ")
+}
+
 // fiveHr returns the account-wide 5h rate-limit window from whichever agent
 // reported it (it's per account, not per agent — any reporter is fine).
 func (m tuiModel) fiveHr() (pct float64, end string) {
@@ -1270,7 +1457,11 @@ func (m tuiModel) viewList() string {
 	h := m.listH()
 	lines := make([]string, 0, h)
 	if len(m.items) == 0 {
-		lines = append(lines, "", sDim.Render("  no agents yet"), "", sDim.Render("  press a (or click + agent)"), sDim.Render("  to spawn your first one"))
+		if m.filter != "" {
+			lines = append(lines, "", sDim.Render("  nothing matches /"+clip(m.filter, sidebarW-22)), "", sDim.Render("  esc clears the filter"))
+		} else {
+			lines = append(lines, "", sDim.Render("  no agents yet"), "", sDim.Render("  press a (or click + agent)"), sDim.Render("  to spawn your first one"))
+		}
 	}
 	for i := m.scroll; i < len(m.items) && len(lines) < h; i++ {
 		lines = append(lines, m.renderItem(i))
@@ -1497,6 +1688,9 @@ func (m tuiModel) viewScroll() string {
 func (m tuiModel) viewBottom() string {
 	if m.mode == "prompt" {
 		return sTitle.Render(" "+m.prompt.label+" › ") + m.input.View() + "\n" + sHelp.Render(" enter send · esc cancel")
+	}
+	if m.mode == "filter" {
+		return sTitle.Render(" / ") + m.input.View() + "\n" + sHelp.Render(" enter keep filter · esc clear")
 	}
 	st := m.status
 	style := sStatus

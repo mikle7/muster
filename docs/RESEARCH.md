@@ -220,3 +220,31 @@ scheduling. That's muster.
    PTY streaming to the mesh — all via CLI shell-outs with PPZ_SESSION pinned.
 5. The scheduling + always-on story (hosted pipescloud.io) is a
    differentiator herdr entirely lacks.
+
+## Session 5 addendum: the 14-competitor pain sweep (2026-07-09)
+
+Full evidence (per-tool findings, ranked cross-tool pain list, ~80 source
+URLs): **docs/COMPETITORS.md**. What it changed here:
+
+1. The market's #1 bug class (capture-pane scraping: claude-squad's top
+   five issues, uzi's races) re-validates decision 3 above — and exposed
+   the next gap: hooks tell you "working", but not "working *silently for
+   25 minutes*". Hence the derived `stalled` state (read-time, pure fn).
+2. Review — not spawning, not parallelism — is the bottleneck every
+   practitioner names (Willison, Omnara HN, vibe-kanban launch). Tools
+   with anonymous sessions can't route review anywhere; muster has named
+   agents with roles, so `review` = one mesh message. `done` closes the
+   other end (uzi's `checkpoint` was the most-praised merge flow in the
+   space; vibe-kanban's "worktree not cleaned after merge" its top bug).
+3. "Worktrees isolate code, not environments" (claude-squad #260,
+   Conductor's whole launch thread, Sculptor's raison d'être) →
+   `.muster/setup` in-pane setup hook. In-pane matters: visible install
+   output was praised, hidden setup phases (Codex, Jules) hated.
+4. Re-orientation cost (TDS, Sculptor praise) → event history + recap.
+   The events file also future-proofs comparative review (post-MVP).
+5. Anti-goals confirmed by corpses: don't hide the harness (Conductor
+   "lost the feel"), don't own auth (OpenCode blocked by Anthropic),
+   don't clone-from-GitHub (Conductor top complaint), don't phone-home
+   (vibe-kanban telemetry revolt), keep shipping (claude-squad died of
+   silence). muster's principles already encode all five — they are the
+   moat, not features to trade away.

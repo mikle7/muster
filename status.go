@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,87 @@ type AgentStatus struct {
 
 func statusPath(sessionUUID string) string {
 	return filepath.Join(statusDir(), sessionUUID+".json")
+}
+
+// ---- event history ----------------------------------------------------------
+// Every hook event is also appended to <uuid>.events.jsonl — the raw material
+// for `muster recap` (re-orientation is the #2 cost of running a fleet: what
+// was this agent doing while I looked away?). Latest-status alone can't answer
+// that.
+
+func eventsPath(sessionUUID string) string {
+	return filepath.Join(statusDir(), sessionUUID+".events.jsonl")
+}
+
+const maxEventsBytes = 128 << 10 // trim threshold
+const keepEvents = 200           // lines kept after a trim
+
+func appendEvent(st AgentStatus) {
+	p := eventsPath(st.SessionID)
+	b, err := json.Marshal(st)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	_, _ = f.Write(append(b, '\n'))
+	_ = f.Close()
+	if fi, err := os.Stat(p); err == nil && fi.Size() > maxEventsBytes {
+		trimEvents(p)
+	}
+}
+
+func trimEvents(p string) {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return
+	}
+	lines := splitLines(string(b))
+	if len(lines) > keepEvents {
+		lines = lines[len(lines)-keepEvents:]
+	}
+	_ = atomicWrite(p, []byte(joinLines(lines)))
+}
+
+// loadEvents returns the last n events, oldest first.
+func loadEvents(sessionUUID string, n int) []AgentStatus {
+	b, err := os.ReadFile(eventsPath(sessionUUID))
+	if err != nil {
+		return nil
+	}
+	lines := splitLines(string(b))
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	var out []AgentStatus
+	for _, l := range lines {
+		var st AgentStatus
+		if json.Unmarshal([]byte(l), &st) == nil {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+func clearEvents(sessionUUID string) { _ = os.Remove(eventsPath(sessionUUID)) }
+
+func splitLines(s string) []string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if strings.TrimSpace(l) != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func joinLines(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // AgentUsage is written by `muster hook status-line` (Claude Code statusLine
@@ -178,6 +260,7 @@ func cmdHook(args []string) int {
 	}
 	b, _ := json.Marshal(st)
 	_ = atomicWrite(statusPath(payload.SessionID), b)
+	appendEvent(st)
 	// desktop nudge on the transition INTO blocked — you're often not
 	// looking at the workspace when an agent stalls on a permission
 	if state == "blocked" && (prev == nil || prev.State != "blocked") {
@@ -278,7 +361,7 @@ func liveState(s *AgentSpec, hb map[string]ppzHeartbeat) (state, reason string) 
 	}
 	if s.SessionUUID != "" {
 		if st := loadStatus(s.SessionUUID); st != nil && st.TS.After(launched) {
-			return st.State, st.Reason
+			return applyStall(st.State, st.Reason, st.TS, stallAfter(), time.Now())
 		}
 	}
 	if s.PpzHandle != "" {
@@ -289,10 +372,22 @@ func liveState(s *AgentSpec, hb map[string]ppzHeartbeat) (state, reason string) 
 	return "unknown", ""
 }
 
+// applyStall derives "stalled" from a working status that hasn't produced a
+// hook event in `after` (0 disables). Spinners lie — the absence of events is
+// the honest "is anything still happening?" signal. Pure for testability.
+func applyStall(state, reason string, ts time.Time, after time.Duration, now time.Time) (string, string) {
+	if state == "working" && after > 0 && now.Sub(ts) > after {
+		return "stalled", "no events for " + fmtAge(ts)
+	}
+	return state, reason
+}
+
 func stateGlyph(state string) string {
 	switch state {
 	case "working":
 		return "⚙"
+	case "stalled":
+		return "⌛"
 	case "blocked":
 		return "✋"
 	case "idle":

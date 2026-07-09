@@ -3,10 +3,80 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-09 (session 4 — rooms + read receipts, right-click
-fixed & extended to the agent pane, skip-permissions default, recursive repo
-discovery, quick terminal, file viewer, keymap. Headless E2E incl. live
-mesh read-receipt PASSED.)
+**Last updated:** 2026-07-09 (session 5 — competitive research sweep +
+stalled state, recap, done/review workflow, worktree setup hook, fleet
+triage keys. ON BRANCH session5-competitive, worktree .wt/session5 —
+awaiting user review before merge. vet/test/gofmt green; headless E2E of
+stall/recap/setup/done/filter PASSED on a Linux sandbox.)
+
+## Session 5: what the rest of the market taught us (BRANCH, unmerged)
+
+Research first: 4 parallel sweeps over ~80 primary sources across 14
+competitors (herdr, claude-squad, uzi, Tmux-Orchestrator, agent-farm,
+vibe-kanban, Crystal, Conductor, Sculptor, Omnara, OpenCode, Terragon,
+Cursor BG agents, Codex cloud, Jules, container-use). Full evidence with
+URLs: **docs/COMPETITORS.md**. Headlines: scraping-based status is every
+tmux tool's top bug source (we're immune, keep it that way); "which agent
+needs me" triage is the product; worktrees isolate code not environments;
+review/merge is the real bottleneck; wrappers that hide the harness die.
+
+Shipped on the branch (all guarded by tests; NOT yet merged to master —
+the user asked to review on a worktree):
+
+- **Stalled state (⌛)**: hooks say working but no event for
+  `stall_after_min` (default 10; MUSTER_STALL_MIN; 0 off) → derived
+  `stalled` at read time (applyStall, pure fn, tested). Ranks between
+  blocked and working in attention sort; red in the sidebar; counted in
+  the new header triage counts ("✋2 ⌛1 ⚙3").
+- **Event history + recap**: hook sink appends every event to
+  `status/<uuid>.events.jsonl` (128KiB trim → last 200). `muster recap
+  <name>` = state+reason, role, usage, dir/⎇, cmd, worktree
+  diffstat/uncommitted/last-commits, event timeline, recent inbox.
+  Sidebar `e` and right-click "recap" open it in a display-popup.
+- **`muster done <name>` [--squash|--keep-branch|--force]** (sidebar `D`,
+  right-click on worktree agents): merge into the repo's checked-out
+  branch → kill → remove worktree → delete branch → drop spec. Refuses on
+  uncommitted worktree (msg suggests `muster send <name> 'commit…'`),
+  refuses on dirty repo, aborts conflicts cleanly ("ask the agent to
+  rebase"). Merge helpers unit-tested against real temp repos (happy,
+  dirty-refusal, conflict-abort).
+- **`muster review <name> [--by r]`** (sidebar `w`, right-click): mesh
+  message to a reviewer agent (default: first live agent with "review" in
+  its role) with branch, checkout path, commits, diffstat vs the repo's
+  HEAD branch, and the reply protocol (APPROVE/CHANGES to mstrctl).
+- **Worktree setup hook**: `.muster/setup` or `.muster-setup.sh` at repo
+  root runs IN the pane, in the fresh worktree, BEFORE the agent (visible;
+  best-effort; spawn-only; never in Argv — TestSetupNeverInArgv pins it).
+- **Fleet triage**: `/` live filter (name/role/state/branch/dir), `u`
+  jump-to-attention (blocked → stalled → unread), `1`–`9` positional
+  jumps, header per-state counts. Sidebar `i` inbox + `e` recap use
+  display-popups (kills the 38-col clip known-issue); pinned splits now
+  titled with the agent name (`muster wpin`, self-exec'd from menus).
+
+### Session 5 E2E evidence (headless, Linux sandbox, scratch server)
+
+Spawned a worktree agent from a repo with `.muster/setup` → marker file
+present in the worktree before the agent ran; `done` refused while
+`b.txt` was uncommitted (guard msg), then merged `mstr/feat` into main
+(--no-ff commit visible in log), removed worktree + branch + spec. Faked
+a 25m-stale working status → `ls` showed `⌛ stalled (no events for
+25m)`; `recap` rendered the event timeline (working→blocked→working);
+TUI header showed `⌛1`, `/xyz` filter narrowed to the
+nothing-matches empty state with the filter echoed in the header and the
+`/ ›` input at the bottom. go vet + go test (9 new tests) + gofmt clean.
+NOTE: sandbox tmux servers die between test shells — kill-path prints
+weren't exercised; cmdDone reuses tmuxKillSession (session-1 tested).
+
+### Review checklist for the user (session5-competitive branch)
+
+1. `git -C .wt/session5 diff master --stat` then the diff itself.
+2. Real-mouse dogfood of: `e` recap popup, `/` filter, `u`, right-click
+   "done (merge & clean)" y/n flow, wpin-titled splits.
+3. If good: `git merge session5-competitive`, rebuild, reinstall
+   (`rm ~/.local/bin/muster` first — macOS signature cache).
+4. Uncommitted `room.go` debug edits on master (roomRefreshedMsg +
+   /tmp/room-debug.log writes) predate this session — left untouched;
+   the roomRefreshedMsg split looks worth keeping, the debug writes not.
 
 ## Session 4: rooms, right-click everywhere, quality-of-life
 
@@ -182,9 +252,12 @@ selected agent's REAL terminal (nested tmux client) — see DESIGN.md.
   the sender's. Acceptable until rooms get their own broadcast pipe.
 - command-prompt inputs with double quotes would break rmenu's send/cron
   shell templates (user typing into their own shell — not a boundary).
-- Sidebar `i` inbox view still clipped to 38 cols (rmenu's popup inbox
-  isn't); consider popups for sidebar inbox/schedules too.
-- Pinned split panes get default titles (hostname), not the agent name.
+- ~~Sidebar `i` inbox clipped to 38 cols~~ fixed session 5 (popup); the
+  `C` schedules list still renders in the sidebar (rarely long — fine).
+- ~~Pinned split panes get default titles~~ fixed session 5 (wpin).
+- Stall threshold (10m) is a guess — one long tool call (big build) can
+  false-positive. Tune after dogfood; MUSTER_STALL_MIN=0 disables.
+- `review` picks the FIRST live role~review agent; no round-robin.
 - 5h % arrives only after an agent's first API response (Pro/Max only);
   rate_limits needs Claude Code ≥2.1.191.
 - tmux-resurrect stale mstr-* interplay unchanged (session-1 note).

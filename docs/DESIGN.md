@@ -216,6 +216,45 @@ Consequences / details:
   workspace is its own setup terminal. ppzCmd always sets NO_COLOR +
   PPZ_UPDATE_CHECK=0; ppzReady cached 10s (the TUI ticks 2s).
 
+## Session 5 — the competitive sweep (see docs/COMPETITORS.md)
+
+Fourteen competitors' pain points, distilled into five decisions:
+
+- **Stalled is a first-class state.** Hooks say "working" but nothing has
+  fired for `stall_after_min` (default 10, env MUSTER_STALL_MIN, 0 off) →
+  derived state `stalled` (⌛), ranked between blocked and working in the
+  attention sort. Derivation happens at READ time (applyStall, pure) — the
+  hook sink stays dumb, nothing new is written. Spinners lie; absent events
+  don't. This is the "is my agent actually stuck?" answer every scraping
+  tool gets wrong.
+- **Recap kills scrollback archaeology.** `muster hook` now appends every
+  event to `status/<uuid>.events.jsonl` (trimmed at 128KiB to the last 200)
+  alongside the latest-status file. `muster recap <name>` (sidebar `e`,
+  right-click "recap") = identity, state+reason, usage, dir/branch,
+  worktree diffstat + last commits, the event timeline, recent inbox.
+  Re-orientation was the #2 hidden cost of fleets in the research.
+- **done + review close the loop.** `muster done <name>` merges the
+  worktree branch into the repo's checked-out branch (--no-ff, or --squash)
+  and cleans everything up — with guards: uncommitted worktree refuses
+  (--force overrides), dirty REPO always refuses, conflicts abort cleanly
+  and say "ask the agent to rebase". `muster review <name> [--by r]` sends
+  a reviewer-role agent the branch, checkout path, commits, diffstat and
+  reply protocol over the mesh — the reviewer reads the real worktree, no
+  patch pasting. Review is the true bottleneck of parallel agents; muster
+  is the only tool in the space with named agents to hand work to.
+- **Worktree setup hook.** `.muster/setup` (or `.muster-setup.sh`) runs IN
+  the agent's pane, in the fresh worktree, before the agent starts —
+  visible install output, best-effort (failure prints and the agent still
+  starts). Composed at spawn only, never stored in Argv, never re-run on
+  resume. "Worktrees isolate code, not environments" was the #1 complaint
+  about every competitor.
+- **Fleet triage scales past one screen.** Header shows per-state counts
+  worst-first (✋2 ⌛1 ⚙3). `/` filters by name/role/state/branch/dir
+  (live, esc clears), `u` jumps to whoever needs you most (blocked →
+  stalled → unread), 1–9 jump by position. Sidebar `i`/`e` open
+  display-popups (the 38-col clip is gone); pinned splits are titled with
+  the agent's name via `muster wpin` (self-exec keeps UI == CLI).
+
 ## Non-goals (MVP)
 
 - No Windows. No zellij backend (interface kept thin enough to add).

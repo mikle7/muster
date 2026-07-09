@@ -78,6 +78,7 @@ func cmdSpawn(args []string) int {
 	}
 
 	// working directory: worktree beats -C beats cwd
+	setup := "" // .muster/setup runs in the pane for FRESH worktrees only
 	switch {
 	case *repo != "" && *branch != "":
 		wt, fb, err := worktreeAdd(*repo, *branch)
@@ -87,6 +88,9 @@ func cmdSpawn(args []string) int {
 		abs, _ := filepath.Abs(*repo)
 		spec.Repo, spec.Worktree, spec.Branch, spec.Dir = abs, wt, fb, wt
 		fmt.Printf("worktree %s (branch %s)\n", wt, fb)
+		if setup = setupScript(abs); setup != "" {
+			fmt.Printf("setup %s runs in the pane before the agent\n", collapseHome(setup))
+		}
 		_, _ = addProject(abs, "") // idempotent: repos you spawn into show up in the UI
 	case *repo != "" || *branch != "":
 		return fail(errf("--repo and -b go together"))
@@ -109,12 +113,14 @@ func cmdSpawn(args []string) int {
 		}
 	}
 
-	return launch(spec, false, *noPpz)
+	return launch(spec, false, *noPpz, setup)
 }
 
 // launch starts the tmux session for spec, wrapping in ppz terminal share
-// when the mesh is available. Shared by spawn and resume.
-func launch(spec *AgentSpec, resume, noPpz bool) int {
+// when the mesh is available. Shared by spawn and resume. setup (fresh
+// worktree spawns only) runs in the pane before everything else — composed
+// here, never stored in Argv.
+func launch(spec *AgentSpec, resume, noPpz bool, setup string) int {
 	env := map[string]string{"MUSTER_AGENT": spec.Name}
 	for k, v := range spec.Env {
 		env[k] = v
@@ -157,6 +163,7 @@ func launch(spec *AgentSpec, resume, noPpz bool) int {
 			cmd = ppzq + " terminal share " + spec.PpzHandle + " -- " + inner
 		}
 	}
+	cmd = withSetup(cmd, setup)
 	// keep the pane alive on failure long enough to read the error
 	cmd += `; rc=$?; [ $rc -ne 0 ] && { echo; echo "muster: agent exited rc=$rc — pane closes in 60s"; sleep 60; }`
 
@@ -388,6 +395,7 @@ func cmdKill(args []string) int {
 	}
 	if s.SessionUUID != "" {
 		clearStatus(s.SessionUUID)
+		clearEvents(s.SessionUUID)
 	}
 	if err := deleteSpec(name); err != nil {
 		return fail(err)
@@ -439,7 +447,7 @@ func cmdResume(args []string) int {
 			continue
 		}
 		s.ResumedAt = time.Now()
-		if launch(s, true, *noPpz) != 0 {
+		if launch(s, true, *noPpz, "") != 0 {
 			rc = 1
 		}
 	}
