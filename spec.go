@@ -137,6 +137,15 @@ func detectHarness(argv []string) string {
 	return ""
 }
 
+func argvHas(argv []string, flag string) bool {
+	for _, a := range argv {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
 // stripFlag removes `flag <value>` and `flag=value` occurrences from argv.
 func stripFlag(argv []string, flag string) []string {
 	var out []string
@@ -196,6 +205,9 @@ func teamRoster(self string) string {
 // muster-injected flags, recomputed at every launch — never stored in Argv.
 func injected(s *AgentSpec, hooksSettings string) []string {
 	var extra []string
+	if skipPermissions() && !argvHas(s.Argv, "--dangerously-skip-permissions") {
+		extra = append(extra, "--dangerously-skip-permissions")
+	}
 	if hooksSettings != "" {
 		extra = append(extra, "--settings", hooksSettings)
 	}

@@ -32,7 +32,8 @@ func bootstrapWorkspace() int {
 	}
 	if !tmuxHasSession(wsSession) {
 		args := []string{"new-session", "-d", "-s", wsSession, "-e", "MUSTER_EMBEDDED=1"}
-		for _, k := range []string{"MUSTER_STATE_DIR", "MUSTER_TMUX_ARGS", "MUSTER_TMUX", "MUSTER_PPZ", "MUSTER_DEFAULT_CMD"} {
+		for _, k := range []string{"MUSTER_STATE_DIR", "MUSTER_TMUX_ARGS", "MUSTER_TMUX", "MUSTER_PPZ",
+			"MUSTER_DEFAULT_CMD", "MUSTER_SKIP_PERMISSIONS", "MUSTER_REPO_ROOTS", "MUSTER_NOTIFY"} {
 			if v := os.Getenv(k); v != "" {
 				args = append(args, "-e", k+"="+v)
 			}
@@ -48,6 +49,7 @@ func bootstrapWorkspace() int {
 		_, _ = tmuxRun("set-option", "-w", "-t", "="+wsSession+":", "pane-border-status", "top")
 		_, _ = tmuxRun("set-option", "-w", "-t", "="+wsSession+":", "pane-border-format", " #{pane_title} ")
 	}
+	bindRightClick()
 	if os.Getenv("TMUX") != "" {
 		if out, err := tmuxRun("switch-client", "-t", "="+wsSession); err != nil {
 			return fail(errf("switch-client: %s", out))
@@ -67,6 +69,20 @@ func bootstrapWorkspace() int {
 		return fail(errf("exec tmux: %v", err))
 	}
 	return 0
+}
+
+// bindRightClick makes right-click work on the agent (right) panes, not just
+// the sidebar. MouseUp3Pane is unbound in stock tmux, and the binding is
+// self-scoping: inside the muster session (except the sidebar pane, which
+// handles its own mouse) it opens the agent menu; everywhere else it exactly
+// replicates the unbound default (forward to mouse-aware panes). Release-
+// triggered on purpose — menus opened while the button is down close the
+// moment you let go. Idempotent; inert outside muster.
+func bindRightClick() {
+	cond := "#{&&:#{==:#{session_name}," + wsSession + "},#{!=:#{pane_current_command}," + filepath.Base(selfExe()) + "}}"
+	ours := `run-shell -b "` + selfExe() + ` rmenu '#{pane_id}' '#{mouse_x}' '#{mouse_y}'"`
+	passthru := "if-shell -F -t= '#{mouse_any_flag}' 'send-keys -M -t='"
+	_, _ = tmuxRun("bind-key", "-n", "MouseUp3Pane", "if-shell", "-F", cond, ours, passthru)
 }
 
 // workspaceAlive reports whether some pane in the muster session still runs
@@ -217,6 +233,32 @@ func (wp *workspacePanes) pin(sess, dir string) {
 	}
 	args = append(args, "-d", "-t", wp.right, attachCmd(sess))
 	_, _ = tmuxRun(args...)
+}
+
+// terminal opens a small shell strip under the agent pane, cwd = dir — for
+// dev servers, migrations, quick git, without leaving the workspace.
+func (wp *workspacePanes) terminal(dir string) {
+	t := wp.right
+	if t == "" {
+		t = wp.left
+	}
+	_, _ = tmuxRun("split-window", "-v", "-l", "12", "-t", t, "-c", dir)
+}
+
+// showRoom fills the agent pane with the project's live room chat. The
+// "room:" lastTarget keeps retarget() from clobbering it on the next tick;
+// selecting an agent replaces it.
+func (wp *workspacePanes) showRoom(proj string) {
+	if wp.right == "" {
+		return
+	}
+	target := "room:" + proj
+	if wp.lastTarget == target {
+		return
+	}
+	_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, shQuote(selfExe())+" room "+shQuote(proj)+" --watch")
+	_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", "#"+proj)
+	wp.lastTarget = target
 }
 
 // runSetup runs an interactive command (e.g. ppz login) in the agent pane,

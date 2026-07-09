@@ -27,6 +27,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   broadcast <text>        message all live agents
   standup                 ask every agent for status — replies collect in the UI (T)
   inbox <name>            peek an agent's inbox (no cursor move)
+  room <project> [--watch] the space's chat: all agent↔agent/you traffic, read receipts
   cron add <name> (--every 4h|--cron "0 9 * * 1"|--at +10m) <prompt>
   cron ls | rm <id>       durable server-side schedules (fire while you sleep)
 
@@ -35,6 +36,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   hook                    (internal) claude hook sink
 
 state: ⚙ working  ✋ blocked  ✔ idle  ☠ dead   env: MUSTER_DEFAULT_CMD, MUSTER_PPZ, MUSTER_STATE_DIR
+config: <state>/config.json — skip_permissions (default true), repo_roots, repo_depth
 `
 
 func main() {
@@ -45,8 +47,9 @@ func main() {
 		"ui": cmdTUI, "spawn": cmdSpawn, "ls": cmdLs, "attach": cmdAttach, "menu": cmdMenu,
 		"resume": cmdResume, "kill": cmdKill,
 		"send": cmdSend, "broadcast": cmdBroadcast, "inbox": cmdInbox,
-		"cron": cmdCron, "project": cmdProject, "standup": cmdStandup,
+		"cron": cmdCron, "project": cmdProject, "standup": cmdStandup, "room": cmdRoom,
 		"init": cmdInit, "doctor": cmdDoctor, "hook": cmdHook,
+		"rmenu": cmdRmenu, "fmenu": cmdFmenu, // internal: tmux menu callbacks
 	}
 	if os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h" {
 		fmt.Print(usage)

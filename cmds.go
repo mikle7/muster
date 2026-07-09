@@ -671,6 +671,8 @@ func cmdInit(args []string) int {
 		return fail(err)
 	}
 	fmt.Println("wrote", p)
+	writeDefaultConfig()
+	fmt.Println("config:", configPath(), "— skip_permissions, repo_roots, repo_depth")
 	// agents must find `ppz` themselves (subs read / send); shell profiles
 	// rebuild PATH (macOS path_helper), so a symlink in a standard dir
 	// beats env injection
@@ -691,8 +693,9 @@ func cmdInit(args []string) int {
 	fmt.Printf("  bind-key g run-shell '%s menu'\n", selfExe())
 	fmt.Println()
 	fmt.Println("optional env (shell profile):")
-	fmt.Println(`  export MUSTER_DEFAULT_CMD="claude --dangerously-skip-permissions"  # spawn default`)
-	fmt.Println(`  export MUSTER_PPZ=/path/to/ppz                                     # if not in PATH`)
+	fmt.Println(`  export MUSTER_DEFAULT_CMD="claude"      # spawn default command`)
+	fmt.Println(`  export MUSTER_PPZ=/path/to/ppz          # if not in PATH`)
+	fmt.Println(`  export MUSTER_SKIP_PERMISSIONS=0        # re-enable permission prompts`)
 	return 0
 }
 

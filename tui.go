@@ -301,7 +301,8 @@ type tuiModel struct {
 	pickRepos []string // discovered, unregistered
 	pickSel   int
 
-	wp workspacePanes
+	wp       workspacePanes
+	roomView string // project whose room chat owns the right pane ("" = agent)
 
 	mode      string // normal | prompt | form | view
 	prompt    promptSpec
@@ -393,7 +394,15 @@ func (m *tuiModel) moveSel(delta int) {
 		next = len(ring) - 1
 	}
 	m.selName = m.items[ring[next]].row.Name
+	m.roomView = "" // navigating agents leaves the room chat
 	m.ensureVisible(ring[next])
+}
+
+// openRoom shows proj's room chat in the right pane.
+func (m *tuiModel) openRoom(proj string) {
+	m.roomView = proj
+	m.retarget()
+	m.status, m.statErr = "#"+proj+" — select an agent (or esc) to leave", false
 }
 
 func (m *tuiModel) ensureVisible(itemIdx int) {
@@ -406,8 +415,13 @@ func (m *tuiModel) ensureVisible(itemIdx int) {
 	}
 }
 
-// retarget points the workspace's agent pane at the current selection.
+// retarget points the workspace's agent pane at the current selection —
+// unless a room chat owns it (cleared by selecting an agent or esc).
 func (m *tuiModel) retarget() {
+	if m.roomView != "" {
+		m.wp.showRoom(m.roomView)
+		return
+	}
 	if r := m.selected(); r != nil {
 		m.wp.retarget(r.Name, r.Tmux, r.State)
 	} else {
@@ -427,6 +441,7 @@ func (m *tuiModel) rebuild() {
 			if m.items[idx].row.Name == m.pendingSelect {
 				m.selName = m.pendingSelect
 				m.pendingSelect = ""
+				m.roomView = "" // a fresh spawn takes the pane
 				m.ensureVisible(idx)
 			}
 		}
@@ -551,8 +566,13 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonRight && m.mode == "normal" {
-		return m.rightClick(msg)
+	if msg.Button == tea.MouseButtonRight && m.mode == "normal" {
+		// menu on RELEASE: a menu opened while the button is down closes
+		// the moment you let go (tmux selects/dismisses on button-up)
+		if msg.Action == tea.MouseActionRelease {
+			return m.rightClick(msg)
+		}
+		return m, nil
 	}
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft || m.mode == "view" {
 		return m, nil
@@ -587,10 +607,16 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			switch it := m.items[idx]; it.kind {
 			case "agent":
 				m.selName = it.row.Name
+				m.roomView = ""
 				m.retarget()
 			case "proj":
-				m.form = newSpawnForm(m.projects, it.projName, "")
-				m.mode = "form"
+				// the row is the room; the trailing + is the spawn button
+				if it.projName == "" || msg.X >= sidebarW-4 {
+					m.form = newSpawnForm(m.projects, it.projName, "")
+					m.mode = "form"
+				} else {
+					m.openRoom(it.projName)
+				}
 			}
 		}
 		return m, nil
@@ -645,6 +671,8 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 			menu = append(menu,
 				"send message…", "s", self+"s",
+				"terminal here", "!", self+"t",
+				"open a file…", "v", self+"v",
 				"schedule…", "c", self+"c",
 				"inbox", "i", self+"i",
 				"kill…", "k", self+"K")
@@ -661,7 +689,11 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			"new agent…", "a", self + "F6",
 			"new worktree agent…", "w", self + "F7"}
 		if it.projName != "" {
-			menu = append(menu, "", "", "", "remove from sidebar", "x", self+"F8")
+			menu = append(menu,
+				"room chat", "g", self+"F9",
+				"terminal here", "!", self+"F10",
+				"", "", "",
+				"remove from sidebar", "x", self+"F8")
 		}
 		_, _ = tmuxRun(menu...)
 		return m, nil
@@ -909,7 +941,34 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.wp.zoom()
 		return m, nil
 
-	// F6/F7/F8 arrive from right-click display-menu items (see rightClick)
+	case "esc":
+		if m.roomView != "" {
+			m.roomView = ""
+			m.retarget()
+		}
+		return m, nil
+
+	case "t": // quick shell in the agent's dir (or the space)
+		dir := m.space
+		if sel != nil {
+			dir = sel.Dir
+		}
+		if dir == "" {
+			m.status, m.statErr = "no agent or space to open a terminal in", true
+			return m, nil
+		}
+		m.wp.terminal(dir)
+		return m, nil
+
+	case "v": // open a file mentioned on the agent's screen
+		if sel == nil || sel.State == "dead" {
+			m.status, m.statErr = "select a live agent first", true
+			return m, nil
+		}
+		fileMenu(sel.Name, m.wp.right)
+		return m, nil
+
+	// F6…F10 arrive from right-click display-menu items (see rightClick)
 	case "f6":
 		m.form = newSpawnForm(m.projects, m.menuProj, "")
 		m.mode = "form"
@@ -921,6 +980,16 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "f8":
 		if m.menuProj != "" {
 			return m, runSelf("project rm", "project", "rm", m.menuProj)
+		}
+		return m, nil
+	case "f9":
+		if m.menuProj != "" {
+			m.openRoom(m.menuProj)
+		}
+		return m, nil
+	case "f10":
+		if m.menuProjPath != "" {
+			m.wp.terminal(m.menuProjPath)
 		}
 		return m, nil
 
@@ -1003,8 +1072,12 @@ const helpText = `sidebar
  j/k ↑/↓  select agent
  enter/l  type into the agent →
  a / S    spawn (form)  P add project
- right-click  agent/project menu
- z        zoom agent pane (C-b z back)
+ t        terminal in agent/space dir
+ v        open a file off the screen
+ click a project = room chat (#proj)
+ right-click  menu — works on BOTH
+          panes; esc/click closes
+ z        zoom agent pane
  s / b    send msg / broadcast
  T        standup — all agents report
  M        pipes: team, messages, setup
@@ -1012,7 +1085,7 @@ const helpText = `sidebar
  r / R    resume sel / all
  i        inbox   c/C schedule/list
  o        sort: attention ⇄ projects
- g        refresh
+ g        refresh   esc leave room
  d        leave (fleet keeps running)
  q        quit workspace
 
@@ -1020,11 +1093,12 @@ agent pane (right)
  click it or press enter, then type
  as normal — it IS the agent's
  terminal, not a copy.
- back here: click sidebar or C-b ←
- scrollback: C-b C-b [
+ back here: click sidebar or prefix ←
+ scrollback: prefix prefix [
+ file splits close with q
 
-every action is also a CLI:
- muster help`
+full map: docs/KEYMAP.md
+every action is also a CLI: muster help`
 
 // ---- view -------------------------------------------------------------------
 
@@ -1243,6 +1317,8 @@ func (m tuiModel) renderItem(i int) string {
 	return line
 }
 
+// viewDetail: one fact per line so the glance works — who/state, harness
+// numbers (or the blocked reason, promoted), where, charter.
 func (m tuiModel) viewDetail() string {
 	w := sidebarW - 2
 	sep := sDim.Render(strings.Repeat("─", w))
@@ -1250,28 +1326,31 @@ func (m tuiModel) viewDetail() string {
 	if r == nil {
 		return sep + "\n\n\n\n"
 	}
-	harness := r.Harness
-	if harness == "" {
-		harness = "shell"
-	}
-	if r.Model != "" {
-		harness = r.Model // "Opus" beats "claude"
-		if r.CtxPct > 0 {
-			harness += fmt.Sprintf(" · ctx %d%%", int(r.CtxPct))
+	l1 := " " + stateStyle(r.State).Bold(true).Render(stateGlyph(r.State)+" "+clip(r.Name, 18)) +
+		sDim.Render("  "+r.State+" · "+r.Age)
+	var l2 string
+	switch {
+	case r.Reason != "" && r.Reason != "heartbeat":
+		l2 = " " + sErr.Render(clip("✋ "+r.Reason, w-1))
+	case r.Model != "":
+		info := fmt.Sprintf("%s · ctx %d%%", r.Model, int(r.CtxPct))
+		if r.Unread > 0 {
+			info += fmt.Sprintf(" · ✉ %d", r.Unread)
 		}
+		l2 = " " + sDim.Render(clip(info, w-1))
+	case r.Harness != "":
+		l2 = " " + sDim.Render(r.Harness)
+	default:
+		l2 = " " + sDim.Render("shell")
 	}
-	l1 := stateStyle(r.State).Bold(true).Render(clip(r.Name, 18)) + sDim.Render(" · "+r.State+" · "+harness)
-	l2 := sDim.Render(clip(collapseHome(r.Dir), w))
-	l3 := ""
+	dir := collapseHome(r.Dir)
 	if r.Branch != "" {
-		l3 = sDim.Render(clip("⎇ "+r.Branch, w))
+		dir += "  ⎇ " + r.Branch
 	}
-	l4 := sDim.Render(clip("$ "+r.Cmd, w))
+	l3 := " " + sDim.Render(clip(dir, w-1))
+	l4 := " " + sDim.Render(clip("$ "+r.Cmd, w-1))
 	if r.Role != "" {
-		l4 = sDim.Render(clip("★ "+r.Role, w)) // the charter beats the argv here
-	}
-	if r.Reason != "" && r.Reason != "heartbeat" {
-		l3 = sErr.Render(clip(r.Reason, w))
+		l4 = " " + sDim.Render(clip("★ "+r.Role, w-1)) // the charter beats the argv
 	}
 	return sep + "\n" + l1 + "\n" + l2 + "\n" + l3 + "\n" + l4
 }

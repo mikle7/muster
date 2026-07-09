@@ -3,9 +3,79 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-09 (session 3 — spaces, right-click, agent
-usage badges, roles + standup, pipes-first mesh view. Live multi-agent
-comms E2E PASSED.)
+**Last updated:** 2026-07-09 (session 4 — rooms + read receipts, right-click
+fixed & extended to the agent pane, skip-permissions default, recursive repo
+discovery, quick terminal, file viewer, keymap. Headless E2E incl. live
+mesh read-receipt PASSED.)
+
+## Session 4: rooms, right-click everywhere, quality-of-life
+
+User issue list: read receipts; pipes as "rooms"; right-click only worked on
+the sidebar and closed on button-release; crowded detail panel; agents should
+default to --dangerously-skip-permissions (configurable); clicking a space
+should show a slack-like chat of its agents; keyboard map; repo picker missed
+nested projects (repos/PixelPioneers/*); quick terminal for dev servers/
+migrations; fast viewing of files agents mention (md first-class).
+
+Shipped (built, tested, installed):
+
+- **Rooms**: a project IS a room. Left-click a project row → the right pane
+  becomes `muster room <proj> --watch` (bubbletea viewport, 2s refresh,
+  wheel/q): every mesh message to any member agent (+ member→you traffic)
+  in the last 24h as one chat — day dividers, `you → dummy`, and **✓✓ read
+  receipts** from ppz ack:read envelopes. The `+` at the row's end still
+  opens the spawn form; esc or selecting an agent leaves. Room ownership of
+  the pane is a `room:` lastTarget + `roomView` model field so the 2s tick
+  doesn't clobber it (that WAS a bug — retarget reconciles from selection).
+  CLI: `muster room <proj>` prints the transcript.
+- **Right-click fixed + right pane**: menus now open on mouse RELEASE — a
+  tmux menu opened while the button is down dies the moment you let go
+  (that was the "closes on release" bug). For the agent pane: bootstrap now
+  binds root-table `MouseUp3Pane` (unbound in stock tmux) guarded by
+  `session==muster && pane_current_command!=muster`; outside muster it
+  replicates the unbound default (forward when mouse_any_flag). In-muster it
+  runs `muster rmenu <pane> <mouse_x> <mouse_y>`, which maps pane_tty →
+  nested client → mstr-* session → agent, then shows a self-contained menu:
+  send (tmux command-prompt), open-a-file, terminal-here, zoom, inbox
+  (display-popup 80%×70% — also dodges the 38-col clip), schedule, kill
+  (confirm-before). No sidebar roundtrip. Claude panes grab the mouse
+  (verified mouse_any_flag=1) so the pass-through press is harmless.
+- **skip-permissions default ON**: `injected()` adds
+  `--dangerously-skip-permissions` at compose time (NEVER into Argv — the
+  faithful-resume guarantee; deduped if the user's argv has it). New
+  `<state>/config.json` ({skip_permissions, repo_roots, repo_depth}), env
+  MUSTER_SKIP_PERMISSIONS=0 overrides; `muster init` writes defaults.
+- **Recursive repo discovery**: picker now WalkDirs each root to repo_depth
+  (default 3), pruning dot-dirs/node_modules/vendor/etc and not descending
+  into found repos — so repos/PixelPioneers/<proj> shows up. Roots: env >
+  config > defaults.
+- **Quick terminal**: `t` (and right-click "terminal here" on agents AND
+  projects) opens a 12-line shell strip under the agent pane, cwd = agent/
+  project dir — dev servers, migrations, git.
+- **File viewer**: `v` (or right-click "open a file…") scrapes path-looking
+  tokens from the agent's screen (+300 lines scrollback), stats them against
+  the agent's cwd, and menus the hits (last-mentioned first, max 12). Pick →
+  pager in a split beside the agent (glow for .md if installed, else bat,
+  else less; images/PDFs → macOS `open`). q closes the split; prefix+z
+  fullscreens. Chat + reading side by side, as requested.
+- **Detail panel decluttered**: one fact per line — glyph+name+state+age /
+  model+ctx+unread (or the blocked reason, promoted, in red) / dir+branch /
+  ★role-or-$cmd.
+- **Keymap**: docs/KEYMAP.md — design rules (tmux-native, vim motion,
+  uppercase = wider blast radius, every menu item names its key) + full
+  tables + deliberate future keys. `?` help updated (user's prefix is C-a,
+  so help says "prefix" not C-b).
+
+### Session 4 E2E evidence (headless, scratch server + stub claude)
+
+Composed spawn showed `--dangerously-skip-permissions` while the stored spec
+argv stayed `['claude']`. Picker listed repos/PixelPioneers/{game-one,two}
+(depth 2) and pruned node_modules. Project click → right pane ran
+`muster room` (title #proj, member list, empty-state), survived refresh
+ticks, and clicking the agent restored the real nested client. `t` opened a
+zsh split in the agent's dir. Right-pane tty resolved to mstr-dummy (rmenu
+chain). LIVE mesh: `muster send dummy` + a real inbox read produced
+`you → dummy ✓✓` in the room transcript. go vet/test/gofmt clean.
 
 ## Session 3: the team release
 
@@ -87,27 +157,36 @@ selected agent's REAL terminal (nested tmux client) — see DESIGN.md.
   testing: MUSTER_STATE_DIR + `-L mstrtest` + **MUSTER_NOTIFY=0** (else
   test agents pop real desktop notifications — learned the loud way).
 - Mesh handle pollution from tests: alice/dave/worker*/runner… exist on
-  the local mesh's who list (offline). Harmless; `ppz source rm` if tidy.
+  the local mesh's who list (offline). Harmless; `ppz source destroy
+  <handle>` cleans up (there is no `source rm`).
 
 ## Known issues / next session TODO
 
 - **Human dogfood still pending** (all E2E is headless): real-mouse feel,
-  display-menu placement (x,y offset guessed +2 for the border row — may
-  need nudging), login-in-pane flow with a real browser, notification UX.
-- Pinned split panes get default titles (hostname), not the agent name —
-  display-menu one-liner can't set -T on the new pane. Polish someday.
-- The form command field scrolls horizontally when long (textinput
-  behavior) — looks like truncation in captures; it isn't. Fine.
-- 5h % arrives only after an agent's first API response (Pro/Max only) —
-  header hides it until then. rate_limits needs Claude Code ≥2.1.191.
-- Inbox/schedules/help still clipped to 38 cols (popup idea deferred).
+  menu placement (rmenu uses raw #{mouse_x}/#{mouse_y}, sidebar guesses
+  +2 for the border row — both may need nudging), login-in-pane flow,
+  notification UX, room chat with a real multi-agent conversation.
+- cmd+click on file paths is terminal-emulator territory (iTerm semantic
+  history), not reachable from tmux — `v` / right-click is the muster way.
+  glow isn't installed on this machine; .md falls back to bat (fine).
+- room shows member-inbox traffic only (no dedicated room pipe); an agent
+  messaging someone OUTSIDE the room shows in the recipient's room, not
+  the sender's. Acceptable until rooms get their own broadcast pipe.
+- command-prompt inputs with double quotes would break rmenu's send/cron
+  shell templates (user typing into their own shell — not a boundary).
+- Sidebar `i` inbox view still clipped to 38 cols (rmenu's popup inbox
+  isn't); consider popups for sidebar inbox/schedules too.
+- Pinned split panes get default titles (hostname), not the agent name.
+- 5h % arrives only after an agent's first API response (Pro/Max only);
+  rate_limits needs Claude Code ≥2.1.191.
 - tmux-resurrect stale mstr-* interplay unchanged (session-1 note).
 
 ## Candidate next steps (in value order)
 
-1. Human dogfood the team workflow: real fleet, roles for pixel/tester,
-   run a real standup, review handoff (the Peter-reviews-a-PR loop).
+1. Human dogfood: fleet with roles, real standup, room chat during a
+   multi-agent task, review handoff (the Peter-reviews-a-PR loop).
 2. `muster done <name>` (merge → kill → rm worktree) + a "review this
    branch" one-key handoff to a reviewer-role agent.
-3. Split-pane titles + display-menu position tuning after dogfood.
-4. Point the mesh at hosted pipescloud.io for always-on schedules.
+3. Keymap future keys: `/` filter, `u` jump-to-blocked, number jumps.
+4. Menu position tuning + pinned-pane titles after dogfood.
+5. Point the mesh at hosted pipescloud.io for always-on schedules.

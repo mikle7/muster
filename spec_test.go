@@ -6,10 +6,18 @@ import (
 	"testing"
 )
 
+// pinState isolates dataDir so the developer's real config.json can't leak
+// into compose behavior (skip_permissions defaults to true with no config).
+func pinState(t *testing.T) {
+	t.Setenv("MUSTER_STATE_DIR", t.TempDir())
+	t.Setenv("MUSTER_SKIP_PERMISSIONS", "")
+}
+
 // The faithful-resume guarantee: every flag the user launched with is
 // present on resume, plus --resume <uuid>, and nothing else we didn't add
 // deliberately. This is the test herdr would have failed (#965).
 func TestComposeResumePreservesAllFlags(t *testing.T) {
+	pinState(t)
 	s := &AgentSpec{
 		Harness:     "claude",
 		SessionUUID: "abc-123",
@@ -26,6 +34,7 @@ func TestComposeResumePreservesAllFlags(t *testing.T) {
 }
 
 func TestComposeAddsMeshBriefingOnlyOnMesh(t *testing.T) {
+	pinState(t)
 	s := &AgentSpec{Harness: "claude", SessionUUID: "u", Argv: []string{"claude"}, PpzHandle: "w1", Name: "w1"}
 	got := composeSpawn(s, "")
 	if got[len(got)-2] != "--append-system-prompt" || !strings.Contains(got[len(got)-1], "'w1'") {
@@ -41,11 +50,34 @@ func TestComposeAddsMeshBriefingOnlyOnMesh(t *testing.T) {
 }
 
 func TestComposeSpawnInjectsSessionID(t *testing.T) {
+	pinState(t)
 	s := &AgentSpec{Harness: "claude", SessionUUID: "u1", Argv: []string{"claude", "-n", "worker"}}
 	got := composeSpawn(s, "")
-	want := []string{"claude", "-n", "worker", "--session-id", "u1"}
+	want := []string{"claude", "-n", "worker", "--session-id", "u1", "--dangerously-skip-permissions"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+// skip-permissions is injected at compose time (never stored in Argv),
+// deduped when the user already passed it, and off when configured off.
+func TestSkipPermissionsInjection(t *testing.T) {
+	pinState(t)
+	s := &AgentSpec{Harness: "claude", SessionUUID: "u1", Argv: []string{"claude", "--dangerously-skip-permissions"}}
+	got := composeSpawn(s, "")
+	n := 0
+	for _, a := range got {
+		if a == "--dangerously-skip-permissions" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("flag should appear exactly once, got %v", got)
+	}
+	t.Setenv("MUSTER_SKIP_PERMISSIONS", "0")
+	got = composeSpawn(&AgentSpec{Harness: "claude", SessionUUID: "u1", Argv: []string{"claude"}}, "")
+	if argvHas(got, "--dangerously-skip-permissions") {
+		t.Fatalf("flag injected despite MUSTER_SKIP_PERMISSIONS=0: %v", got)
 	}
 }
 

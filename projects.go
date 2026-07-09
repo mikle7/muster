@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -126,11 +127,18 @@ func currentSpace() string {
 
 // ---- repo discovery (the [+ project] picker) --------------------------------
 
-// repoRoots are scanned one level deep for git repos. Overridable because
-// everyone's layout differs, but the defaults cover the usual suspects.
+// repoRoots are scanned for git repos. Env beats config beats defaults,
+// because everyone's layout differs.
 func repoRoots() []string {
 	if v := os.Getenv("MUSTER_REPO_ROOTS"); v != "" {
 		return filepath.SplitList(v)
+	}
+	if c := loadConfig(); len(c.RepoRoots) > 0 {
+		out := make([]string, len(c.RepoRoots))
+		for i, r := range c.RepoRoots {
+			out[i] = expandHome(r)
+		}
+		return out
 	}
 	h, _ := os.UserHomeDir()
 	return []string{
@@ -141,9 +149,16 @@ func repoRoots() []string {
 	}
 }
 
-// discoverRepos lists git repos under the roots (and the roots themselves if
-// they are repos) that aren't registered projects yet. Worktree dirs muster
-// created (X__wt) are skipped — they belong to their parent repo.
+// pruneDirs never contain user projects — skipping them keeps the walk fast.
+var pruneDirs = map[string]bool{
+	"node_modules": true, "vendor": true, "dist": true, "build": true,
+	"target": true, "venv": true, "__pycache__": true,
+}
+
+// discoverRepos walks the roots up to repo_depth levels for git repos that
+// aren't registered projects yet — so ~/repos/PixelPioneers/<proj> is found,
+// not just ~/repos/<proj>. A found repo isn't descended into (nested repos
+// belong to their parent), and muster worktree dirs (X__wt) are skipped.
 func discoverRepos(registered []Project) []string {
 	taken := map[string]bool{}
 	for _, p := range registered {
@@ -157,24 +172,27 @@ func discoverRepos(registered []Project) []string {
 			out = append(out, dir)
 		}
 	}
+	sep := string(filepath.Separator)
+	maxDepth := repoDepth()
 	for _, root := range repoRoots() {
-		if isGitRepo(root) {
-			add(root)
-			continue
-		}
-		ents, err := os.ReadDir(root)
-		if err != nil {
-			continue
-		}
-		for _, e := range ents {
-			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
-				continue
+		root := filepath.Clean(root)
+		rootDepth := strings.Count(root, sep)
+		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || !d.IsDir() {
+				return nil
 			}
-			dir := filepath.Join(root, e.Name())
-			if isGitRepo(dir) {
-				add(dir)
+			if p != root && (strings.HasPrefix(d.Name(), ".") || pruneDirs[d.Name()]) {
+				return fs.SkipDir
 			}
-		}
+			if isGitRepo(p) {
+				add(p)
+				return fs.SkipDir
+			}
+			if strings.Count(p, sep)-rootDepth >= maxDepth {
+				return fs.SkipDir
+			}
+			return nil
+		})
 	}
 	sort.Strings(out)
 	return out
