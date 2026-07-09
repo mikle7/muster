@@ -73,6 +73,8 @@ prefix (this machine: C-a):
 | prefix ← | back to the sidebar |
 | prefix prefix [ | scrollback of the *inner* (agent) session |
 | q | closes a file-viewer split (it's just a pager) |
+| ctrl-d / `exit` | closes a quick-terminal strip (it's just a shell) |
+| prefix x | force-kill any split (tmux native, y to confirm) |
 
 ## Room chat (right pane, after clicking a project)
 

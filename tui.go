@@ -1111,6 +1111,7 @@ agent pane (right)
  back here: click sidebar or prefix ←
  scrollback: prefix prefix [
  file splits close with q
+ terminal strips: ctrl-d / exit
 
 full map: docs/KEYMAP.md
 every action is also a CLI: muster help`
