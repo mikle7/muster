@@ -97,6 +97,44 @@ func TestBuildRowsRemoteUnreadCount(t *testing.T) {
 	}
 }
 
+// ---- remote rows bucket by project name (follow-up to the mesh-sidebar
+// work: paths differ per machine, so a remote row carries its spawning
+// machine's registered project NAME via the heartbeat instead) ----------
+
+func TestBuildRowsCarriesProject(t *testing.T) {
+	hb := map[string]ppzHeartbeat{
+		"ivy": {Handle: "ivy", Status: "online", State: "working", Harness: "claude", Project: "pixel-studios"},
+	}
+	rows := buildRows(nil, hb, nil)
+	if len(rows) != 1 || rows[0].Project != "pixel-studios" {
+		t.Fatalf("got %+v, want Project=pixel-studios", rows)
+	}
+}
+
+func TestProjectForLocalPathUnaffected(t *testing.T) {
+	ps := []Project{{Name: "pixel-studios", Path: "/repo/pixel-studios"}}
+	r := lsRow{Dir: "/repo/pixel-studios/apps/api"}
+	if got := projectFor(ps, r); got != "pixel-studios" {
+		t.Fatalf("got %q, want pixel-studios (path-matching must stay unchanged)", got)
+	}
+}
+
+func TestProjectForRemoteNameFallback(t *testing.T) {
+	ps := []Project{{Name: "pixel-studios", Path: "/repo/pixel-studios"}}
+	r := lsRow{Remote: true, Project: "pixel-studios"} // no Dir/Repo — different machine, different path
+	if got := projectFor(ps, r); got != "pixel-studios" {
+		t.Fatalf("got %q, want pixel-studios via name fallback", got)
+	}
+}
+
+func TestProjectForRemoteUnknownProjectIsUnassigned(t *testing.T) {
+	ps := []Project{{Name: "pixel-studios", Path: "/repo/pixel-studios"}}
+	r := lsRow{Remote: true, Project: "some-other-repo-not-registered-here"}
+	if got := projectFor(ps, r); got != "" {
+		t.Fatalf("got %q, want \"\" (unassigned) for a project this machine hasn't registered", got)
+	}
+}
+
 // agentHandle must resolve a mesh-only handle directly (no local spec) so
 // `muster send`/`inbox`/`cron add` work against a remote sidebar row — the
 // same distinction buildRows draws to decide what's a synthetic remote row.

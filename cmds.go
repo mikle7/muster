@@ -158,6 +158,10 @@ func launch(spec *AgentSpec, resume, noPpz bool, setup string) int {
 		// join the project's shared room pipe before the harness starts, so
 		// room traffic reaches this agent via `ppz subs read` / the nudge
 		if proj := projectFor(loadProjects(), lsRow{Dir: spec.Dir, Repo: spec.Repo}); proj != "" {
+			// heartbeat hint: lets a DIFFERENT machine bucket this agent's
+			// remote sidebar row under the right project by name (paths
+			// differ per machine, so only the name travels).
+			env["PPZ_AGENT_PROJECT"] = proj
 			if pipe, err := ensureRoomPipe(proj); err == nil {
 				subscribeRoom(spec.Name, pipe)
 			} else {
@@ -222,6 +226,7 @@ type lsRow struct {
 	FiveEnd string  `json:"five_end,omitempty"` // HH:MM reset time
 	Remote  bool    `json:"remote,omitempty"`   // mesh-only: no local spec (other machine)
 	Host    string  `json:"host,omitempty"`     // remote: hostname from its heartbeat
+	Project string  `json:"project,omitempty"`  // remote: project NAME from its heartbeat (no local Dir/Repo to match on)
 }
 
 func gatherRows() ([]lsRow, error) {
@@ -298,6 +303,7 @@ func remoteRows(hb map[string]ppzHeartbeat, ours map[string]bool, unread map[str
 		rows = append(rows, lsRow{
 			Name: h, State: state, Reason: "heartbeat", Harness: hbEntry.Harness,
 			Ppz: h, Unread: unread[h], Model: hbEntry.Model, Remote: true, Host: hbEntry.Host,
+			Project: hbEntry.Project,
 		})
 	}
 	return rows

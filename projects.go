@@ -206,6 +206,18 @@ func projectFor(ps []Project, r lsRow) string {
 	if dir == "" {
 		dir = r.Dir
 	}
+	if dir == "" && r.Project != "" {
+		// remote row: no local path to match (paths differ per machine),
+		// only the project NAME its heartbeat carried. Exact match against
+		// this machine's own registered projects, else unassigned — same
+		// as any other project this machine hasn't registered.
+		for _, p := range ps {
+			if p.Name == r.Project {
+				return p.Name
+			}
+		}
+		return ""
+	}
 	best := ""
 	bestLen := -1
 	for _, p := range ps {
