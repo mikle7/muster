@@ -815,6 +815,14 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.mode = "form"
 		case "project":
 			m.openPicker()
+		case "term":
+			dir := m.space
+			if r := m.selected(); r != nil && !r.Remote {
+				dir = r.Dir
+			}
+			if dir != "" {
+				m.wp.terminal(dir)
+			}
 		}
 	}
 	return m, nil
@@ -1885,22 +1893,26 @@ func (m tuiModel) viewDetail() string {
 	return sep + "\n" + l1 + "\n" + l2 + "\n" + l3 + "\n" + l4
 }
 
-// button extents are fixed: " [+ agent] [+ project] "
+// button extents are fixed: " [+ agent] [+ project] [term] "
 const btnAgent = "[+ agent]"
 const btnProject = "[+ project]"
+const btnTerm = "[term]"
 
 func (m tuiModel) viewButtons() string {
-	return " " + sButton.Render(btnAgent) + " " + sButton.Render(btnProject)
+	return " " + sButton.Render(btnAgent) + " " + sButton.Render(btnProject) + " " + sButton.Render(btnTerm)
 }
 
 func hitButton(x int) string {
 	a0, a1 := 1, 1+len(btnAgent)
 	p0, p1 := a1+1, a1+1+len(btnProject)
+	t0, t1 := p1+1, p1+1+len(btnTerm)
 	switch {
 	case x >= a0 && x < a1:
 		return "agent"
 	case x >= p0 && x < p1:
 		return "project"
+	case x >= t0 && x < t1:
+		return "term"
 	}
 	return ""
 }
@@ -2020,7 +2032,7 @@ func (m tuiModel) viewBottom() string {
 	if m.statErr {
 		style = sErr
 	}
-	help := sHelp.Render(" a spawn · P project · enter type · ? keys")
+	help := sHelp.Render(" a spawn · t term · enter type · ? keys")
 	return style.Render(" "+clip(st, sidebarW-1)) + "\n" + help
 }
 
