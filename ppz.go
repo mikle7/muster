@@ -292,6 +292,49 @@ func ppzScheduleText() string {
 	return strings.TrimSpace(string(out))
 }
 
+type ppzScheduleEntry struct {
+	ID       string `json:"id"`
+	Handle   string `json:"handle"`
+	Pipe     string `json:"pipe"`
+	Schedule string `json:"schedule"` // "every" | "cron" | "at"
+	Spec     string `json:"spec"`     // the interval / cron expr / timestamp
+	NextAt   string `json:"next_at"`
+	LastAt   string `json:"last_at"`
+	Payload  string `json:"payload"`
+	Creator  string `json:"creator"`
+}
+
+// ppzScheduleList returns all live schedules in next-fire order.
+func ppzScheduleList() []ppzScheduleEntry {
+	if !ppzReady() {
+		return nil
+	}
+	out, err := ppzJSON(ctlSession, "schedule", "ls", "--json")
+	if err != nil && len(strings.TrimSpace(string(out))) == 0 {
+		return nil
+	}
+	var entries []ppzScheduleEntry
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		var e ppzScheduleEntry
+		if json.Unmarshal([]byte(line), &e) == nil {
+			entries = append(entries, e)
+		}
+	}
+	return entries
+}
+
+// ppzScheduleRm removes a schedule by ID. Returns nil on success.
+func ppzScheduleRm(id string) error {
+	out, err := ppzOut(ctlSession, "schedule", "rm", id)
+	if err != nil {
+		return errf("ppz schedule rm %s: %s", id, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 type ppzPipeRow struct {
 	Handle string `json:"handle"`
 	Pipe   string `json:"pipe"`

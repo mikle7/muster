@@ -422,12 +422,16 @@ type tuiModel struct {
 	selGen           int
 	lastSelForAttach string
 
-	mode      string // normal | prompt | form | view
+	mode      string // normal | prompt | form | view | cron
 	prompt    promptSpec
 	input     textinput.Model
 	form      *uiForm
 	viewTitle string
 	viewBody  string
+
+	// cron mode (C key): interactive schedule list with j/k + delete
+	cronEntries []ppzScheduleEntry
+	cronSel     int
 
 	status        string
 	statErr       bool
@@ -701,9 +705,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status, m.statErr = msg.label+": "+firstLine(msg.out+" "+msg.err.Error()), true
 		} else {
 			m.status, m.statErr = msg.label+": "+firstLine(msg.out), false
-			if msg.label == "cron ls" {
-				m.mode, m.viewTitle, m.viewBody = "view", "schedules", msg.out
-			}
 		}
 		m.seq++
 		return m, refreshCmd(m.seq)
@@ -727,6 +728,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = "normal"
 			}
 			return m, nil
+		case "cron":
+			return m.updateCron(msg)
 		case "mesh":
 			return m.updateMesh(msg)
 		}
@@ -759,7 +762,7 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft || m.mode == "view" {
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft || m.mode == "view" || m.mode == "cron" {
 		return m, nil
 	}
 	if m.mode == "pick" {
@@ -957,6 +960,43 @@ func (m tuiModel) updateMesh(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "T":
 		return m, runSelf("standup", "standup")
+	}
+	return m, nil
+}
+
+func (m tuiModel) updateCron(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "C":
+		m.mode = "normal"
+		return m, nil
+	case "j", "down":
+		if m.cronSel < len(m.cronEntries)-1 {
+			m.cronSel++
+		}
+	case "k", "up":
+		if m.cronSel > 0 {
+			m.cronSel--
+		}
+	case "d":
+		if len(m.cronEntries) == 0 {
+			return m, nil
+		}
+		e := m.cronEntries[m.cronSel]
+		target := e.Handle + "." + e.Pipe
+		preview := clip(e.Payload, 30)
+		id := e.ID
+		m.openPrompt(promptSpec{
+			label:       "delete schedule " + id,
+			placeholder: "y to remove  " + target + ": " + preview,
+			argv: func(t string) []string {
+				if !strings.HasPrefix(t, "y") {
+					return []string{"ls"}
+				}
+				return []string{"cron", "rm", id}
+			},
+		})
+		m.mode = "prompt" // openPrompt already sets mode, but be explicit
+		return m, nil
 	}
 	return m, nil
 }
@@ -1417,7 +1457,10 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "C":
-		return m, runSelf("cron ls", "cron", "ls")
+		m.cronEntries = ppzScheduleList()
+		m.cronSel = 0
+		m.mode = "cron"
+		return m, nil
 
 	case "M":
 		m.mode = "mesh"
@@ -1535,7 +1578,8 @@ const helpText = `sidebar
  K        kill (keep spec for resume)
  X        kill+remove (wipe spec too)
  r / R    resume sel / all
- i        inbox   c/C schedule/list
+ i        inbox   c add schedule
+ C        schedules (j/k nav, d delete)
  o        sort: attention ⇄ projects
  g        refresh   esc leave room
  d        leave (fleet keeps running)
@@ -1608,6 +1652,8 @@ func (m tuiModel) View() string {
 		mid = m.viewPick()
 	case "view", "mesh":
 		mid = m.viewScroll()
+	case "cron":
+		mid = m.viewCron()
 	default:
 		mid = m.viewList() + "\n" + m.viewDetail() + "\n" + m.viewButtons()
 	}
@@ -2002,6 +2048,58 @@ func (m tuiModel) formFieldAt(y int) int {
 		return i
 	}
 	return -1
+}
+
+// cronNextRel formats a ppz next_at timestamp as a human relative string.
+func cronNextRel(nextAt string) string {
+	if nextAt == "" {
+		return "—"
+	}
+	t, err := time.Parse(time.RFC3339, nextAt)
+	if err != nil {
+		return nextAt[:min(len(nextAt), 16)]
+	}
+	d := time.Until(t)
+	if d < 0 {
+		return "past"
+	}
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("in %dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("in %dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("in %dd", int(d.Hours()/24))
+	}
+}
+
+func (m tuiModel) viewCron() string {
+	h := m.listH() + detailH + 1
+	lines := []string{sTitle.Render(" schedules")}
+	if len(m.cronEntries) == 0 {
+		lines = append(lines, "", sDim.Render("  no schedules — use c to add one"))
+	} else {
+		for i, e := range m.cronEntries {
+			target := clip(e.Handle+"."+e.Pipe, 14)
+			next := cronNextRel(e.NextAt)
+			row := fmt.Sprintf(" %-14s %-7s  %s", target, next, clip(e.Payload, sidebarW-26))
+			if i == m.cronSel {
+				lines = append(lines, sSelected.Render(fmt.Sprintf("%-*s", sidebarW-1, ">"+row)))
+			} else {
+				lines = append(lines, " "+row)
+			}
+		}
+		if m.cronSel < len(m.cronEntries) {
+			e := m.cronEntries[m.cronSel]
+			lines = append(lines, "", sDim.Render(" id: "+e.ID+"  "+e.Schedule+" "+e.Spec))
+			lines = append(lines, sDim.Render(" "+clip(e.Payload, sidebarW-2)))
+		}
+	}
+	lines = append(lines, "", sHelp.Render(" j/k nav · d delete · esc back"))
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines[:h], "\n")
 }
 
 func (m tuiModel) viewScroll() string {
