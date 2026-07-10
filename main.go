@@ -26,6 +26,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   done <name> [--squash]  merge the worktree branch back, kill, clean up (guarded)
   review <name> [--by r]  hand the branch to a reviewer agent over the mesh
   project add|ls|rm       register repos/dirs — the UI groups agents by project
+  project conventions <n> [text|--clear]  per-project workflow prompt (injected at spawn)
 
   send <name> <text>      message an agent over ppz (delivered when idle)
   broadcast <text>        message all live agents

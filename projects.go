@@ -14,8 +14,9 @@ import (
 // and spawned into from the spawn form. Just a name + path — anything more
 // belongs in the repo itself.
 type Project struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
+	Name              string `json:"name"`
+	Path              string `json:"path"`
+	ConventionsPrompt string `json:"conventions_prompt,omitempty"` // injected at spawn if set
 }
 
 func projectsPath() string { return filepath.Join(dataDir(), "projects.json") }
@@ -285,6 +286,48 @@ func cmdProject(args []string) int {
 			return fail(err)
 		}
 		fmt.Println("removed project", args[1], "(agents and dirs untouched)")
+		return 0
+	case "conventions":
+		// muster project conventions <name>          → show current value
+		// muster project conventions <name> <text>   → set conventions prompt
+		// muster project conventions <name> --clear  → remove it
+		if len(args) < 2 {
+			return fail(errf("usage: muster project conventions <name> [text | --clear]"))
+		}
+		name := args[1]
+		ps := loadProjects()
+		idx := -1
+		for i, p := range ps {
+			if p.Name == name {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return fail(errf("no project %q", name))
+		}
+		if len(args) == 2 {
+			if ps[idx].ConventionsPrompt == "" {
+				fmt.Println("(none set)")
+			} else {
+				fmt.Println(ps[idx].ConventionsPrompt)
+			}
+			return 0
+		}
+		if args[2] == "--clear" {
+			ps[idx].ConventionsPrompt = ""
+			if err := saveProjects(ps); err != nil {
+				return fail(err)
+			}
+			fmt.Printf("cleared conventions prompt for project %s\n", name)
+			return 0
+		}
+		text := strings.Join(args[2:], " ")
+		ps[idx].ConventionsPrompt = text
+		if err := saveProjects(ps); err != nil {
+			return fail(err)
+		}
+		fmt.Printf("set conventions prompt for project %s (%d chars)\n", name, len(text))
 		return 0
 	}
 	return fail(errf("unknown project subcommand %q", args[0]))
