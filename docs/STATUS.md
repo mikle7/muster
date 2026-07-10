@@ -3,12 +3,109 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-10 (session 10 — remote sidebar rows embed a real
-`ppz terminal attach` in the right pane, now with a debounced auto-attach
-on mere selection (no enter required) after Michael's feedback. vet/test/
-gofmt green; live E2E PASSED including scroll-through-doesn't-spawn and
-scroll-away-and-back-doesn't-respawn, both verified by PID. Branch
-`feat/remote-attach`, uncommitted here — pushed for review.)
+**Last updated:** 2026-07-10 (session 10 — remote rows now follow via a
+persistent background mesh proxy (issue #16, pause+jump): glancing away
+and back is a cheap switch-client, same as local agents, not a fresh
+connect + scrollback replay. vet/test/gofmt green; live E2E PASSED —
+found and fixed three real bugs, all only visible under live testing
+(a false-follow-on-cold-boot safety hole, an over-broad fix for that hole
+that then broke deliberate filtering, and a missing remain-on-exit that
+silently defeated the crash self-heal). Branch `feat/remote-attach`,
+uncommitted here — pushed for review.)
+
+## Session 10 addendum 2: persistent mesh proxies (issue #16)
+
+Chud shipped `ppz terminal attach --embedded` (Ctrl-\ swallowed, never
+forwarded to the remote as SIGQUIT either — closes a latent bug — so a
+persistent proxy's connection literally can't be broken by a keystroke).
+Design agreed with chud before writing code (this is `mstr-mesh-<name>`,
+distinct from `mstr-<name>` real local sessions): lazy creation (only on
+first follow, never pre-spawned for the roster), LRU-3 eviction via a
+plain `map[string]time.Time`, kill-on-dead when an agent's heartbeat goes
+classified-offline, self-heal (respawn in place) only on a genuine crash —
+never on Ctrl-\, which `--embedded` makes impossible from inside a proxy.
+
+The proxy model let local and remote rows converge onto the SAME
+switch-client code path in `workspacePanes.retarget()` — once a proxy
+exists, it's just another tmux session to nest a client into, exactly
+like a real local agent's session. This deleted most of the "attach:"-
+specific bookkeeping from the previous addendum (the liveness-check block,
+the placeholder-swap guard) — no longer needed once `wp.right` is always
+just a nested client, never a process directly running `ppz terminal
+attach` itself.
+
+**Three real bugs, all found only by testing the live behavior — none
+visible from reading the code:**
+
+1. **Accidentally followed a real teammate on cold boot.** The sidebar's
+   existing "nothing selected → default to whatever sorts first"
+   fallback (in `rebuild()`) landed on `chud` (alphabetically first
+   remote row) the instant a fresh scratch instance booted — before any
+   deliberate navigation — and the new auto-follow-on-select design
+   started creating a REAL background proxy connection to a teammate's
+   live session, unprompted. This existed as a latent risk in the
+   session-10 (non-proxy) debounce work too, but was harmless there
+   (ephemeral — killed the moment selection moved away); with a
+   PERSISTENT proxy it could linger unnoticed. Caught only because a
+   `list-sessions` happened to show `mstr-mesh-chud` mid-test — killed it
+   immediately, then fixed at the root: `rebuild()`'s fallback now
+   pre-marks the defaulted row as "already scheduled" so `retarget()`
+   never auto-follows it, while an explicit enter/l still can.
+2. **That fix was too broad — it broke deliberate filtering.** The
+   original fix didn't check whether a filter was active, and typing a
+   filter query character-by-character (e.g. `/px-one`) ALSO repeatedly
+   hits the exact same "selection vanished → fallback" path as each
+   partial match narrows the field — the fix was suppressing every one
+   of those too, so a row you'd deliberately filtered down to would just
+   never follow. Refined: the fallback only suppresses when `m.filter ==
+   ""` (truly passive — nothing narrowing the field explains the pick);
+   a non-empty filter is deliberate intent, and its own keystroke churn
+   is already handled correctly by the settle timer's own supersession
+   (gen token), not this guard.
+3. **Self-heal was silently defeated by a missing `remain-on-exit`.**
+   `ensureMeshProxy` never set it on the proxy session, so a genuine
+   crash of the attach process closed its pane — the session's only
+   one — destroying the WHOLE proxy session instead of leaving a frozen,
+   detectable pane for `meshProxyPaneDead`/`respawnMeshProxy` to find.
+   Confirmed via a direct `kill -9` on the attach process: the session
+   vanished from `tmux list-sessions` entirely rather than showing
+   `pane_dead=1`. Fixed by setting `remain-on-exit on` right after
+   creation, mirroring the right pane's own existing setup in
+   `ensureRightPane`.
+
+Also found, NOT caused by this work: `ppzWho()` returns an empty result on
+any transient subprocess failure (this Mac's daemon had a persistent
+"out of sync with ppz cli" warning through much of this session) — the
+FIRST version of the kill-on-dead check treated "agent missing from this
+one poll's rows" as equivalent to dead, which would mass-reap every
+tracked proxy simultaneously over a single hiccup. Fixed before it caused
+real damage in testing (only one proxy was lost to it) by requiring the
+row's state be the CLASSIFIED `"dead"` (a real offline determination),
+never inferred from absence alone.
+
+### Session 10 addendum 2 E2E evidence
+
+Same safety discipline throughout: real ppz, disposable
+`ppz terminal share <throwaway> -- sh` targets created/destroyed per run,
+selection always confirmed via the `/` filter before any interaction.
+Verified: cold boot with no filter selects a row but does NOT create a
+proxy for it (even after 5+ seconds / multiple ticks); filtering to a
+specific row DOES follow it once settled; switching between two
+ALREADY-existing proxies is a true no-op respawn-wise (`pane_pid`
+identical before/after, both for the right pane's nested client and the
+proxy's own process) — the one-time respawn on a BRAND NEW proxy's first
+view is expected and distinct from this; LRU-3 correctly evicted the
+least-recently-viewed proxy on creating a 4th, confirmed both untracked
+AND the underlying tmux session actually killed; kill-on-dead relies on
+ppz's own online→stale→offline heartbeat classification, which has its
+own ~60s+ staleness delay independent of this code — not practically
+waitable-out in a test session, but reuses the exact `state=="dead"`
+signal already proven correct elsewhere in this session's testing;
+self-heal verified via a direct `kill -9` on the proxy's attach process —
+session survived (`remain-on-exit`), tick detected `pane_dead=1`,
+respawned with a new PID, live shell restored. Local rows re-verified
+unaffected: instant embed on select, unchanged. go vet/build/test/gofmt
+clean throughout.
 
 ## Session 10 addendum: debounced auto-attach (no enter required)
 

@@ -385,6 +385,12 @@ type tuiModel struct {
 	selGen           int
 	lastSelForAttach string
 
+	// meshProxies tracks persistent mstr-mesh-<name> tmux sessions (see
+	// meshProxySession) keyed by agent name, value = last viewed. Bounded
+	// by meshProxyCap (LRU eviction on creation) and pruned on the periodic
+	// tick when an agent goes offline (reapMeshProxies).
+	meshProxies map[string]time.Time
+
 	mode      string // normal | prompt | form | view
 	prompt    promptSpec
 	input     textinput.Model
@@ -404,7 +410,7 @@ func newTUI() tuiModel {
 	ti := textinput.New()
 	ti.CharLimit = 4096
 	ti.Width = sidebarW - 4
-	return tuiModel{mode: "normal", status: "click an agent, then just type", input: ti}
+	return tuiModel{mode: "normal", status: "click an agent, then just type", input: ti, meshProxies: map[string]time.Time{}}
 }
 
 func (m tuiModel) Init() tea.Cmd {
@@ -514,20 +520,96 @@ func (m *tuiModel) retarget() tea.Cmd {
 	r := m.selected()
 	if r == nil {
 		m.wp.retarget("", "", "")
-		m.lastSelForAttach = ""
 		return nil
 	}
-	m.wp.retarget(r.Name, r.Tmux, r.State)
-	if !r.Remote || r.State == "dead" {
-		m.lastSelForAttach = ""
+	sess := r.Tmux
+	if r.Remote && r.State != "dead" {
+		if proxy := meshProxySession(r.Name); tmuxHasSession(proxy) {
+			sess = proxy                       // already followed — cheap switch-client, same as any local row
+			m.meshProxies[r.Name] = time.Now() // touch LRU on every glance, not just first follow
+		}
+	}
+	m.wp.retarget(r.Name, sess, r.State)
+	if !r.Remote || r.State == "dead" || sess != "" || r.Name == m.lastSelForAttach {
 		return nil
 	}
-	if r.Name == m.lastSelForAttach {
-		return nil
-	}
+	// no proxy yet — schedule the debounced settle that creates one (see
+	// attachSettleMsg / followMeshProxy). Deduped against lastSelForAttach
+	// so an unchanged selection (notably the 2s refresh tick) never
+	// reschedules; only an actual change in which row is selected does.
 	m.lastSelForAttach = r.Name
 	m.selGen++
 	return attachSettleCmd(r.Name, m.selGen)
+}
+
+// meshProxyCap bounds how many remote agents muster follows in the
+// background at once — an LRU working set ("the couple you're actively
+// bouncing between"), not a general connection pool.
+const meshProxyCap = 3
+
+// followMeshProxy ensures a persistent proxy session exists for name
+// (creating it — and evicting the least-recently-viewed beyond
+// meshProxyCap if needed — only if one doesn't already exist), then
+// switches the right pane to it. Called from the debounce settle-fire and
+// enter/l's immediate override — the only two places that actually
+// create/reveal a proxy; mere selection (retarget) only switches to one
+// that's already there.
+func (m *tuiModel) followMeshProxy(name, state string) {
+	sess := meshProxySession(name)
+	if !tmuxHasSession(sess) {
+		for len(m.meshProxies) >= meshProxyCap {
+			m.evictOldestMeshProxy()
+		}
+		_ = ensureMeshProxy(name)
+	}
+	m.meshProxies[name] = time.Now()
+	m.wp.retarget(name, sess, state)
+	m.status, m.statErr = "following "+name+" (mesh) — navigate away to stop", false
+}
+
+func (m *tuiModel) evictOldestMeshProxy() {
+	oldest, oldestAt := "", time.Time{}
+	for n, t := range m.meshProxies {
+		if oldest == "" || t.Before(oldestAt) {
+			oldest, oldestAt = n, t
+		}
+	}
+	if oldest == "" {
+		return
+	}
+	_ = reapMeshProxy(oldest)
+	delete(m.meshProxies, oldest)
+}
+
+// reapMeshProxies runs every 2s tick: kills any proxy whose agent is now
+// dead or gone from the mesh entirely (a clear signal — bounds mesh
+// subscriptions to agents actually worth following), and self-heals any
+// proxy whose attach process crashed (rare — Ctrl-\ can't cause this
+// anymore, --embedded swallows it, so only a genuine crash leaves the
+// pane dead).
+func (m *tuiModel) reapMeshProxies() {
+	state := map[string]string{} // remote agent name -> current state
+	for _, r := range m.rows {
+		if r.Remote {
+			state[r.Name] = r.State
+		}
+	}
+	for name := range m.meshProxies {
+		// Only a CLASSIFIED dead state reaps. "Missing from this one
+		// poll's rows" isn't reliable enough to act on — ppzWho() returns
+		// an empty result on ANY transient subprocess hiccup, which would
+		// otherwise make every tracked proxy look simultaneously gone and
+		// get mass-reaped over a single blip. An agent that's genuinely
+		// offline shows up classified "dead" (state.go), not absent.
+		if state[name] == "dead" {
+			_ = reapMeshProxy(name)
+			delete(m.meshProxies, name)
+			continue
+		}
+		if meshProxyPaneDead(name) {
+			respawnMeshProxy(name)
+		}
+	}
 }
 
 func (m *tuiModel) rebuild() tea.Cmd {
@@ -554,6 +636,27 @@ func (m *tuiModel) rebuild() tea.Cmd {
 		m.selName = ""
 		if len(ring) > 0 {
 			m.selName = m.items[ring[0]].row.Name
+			if m.filter == "" {
+				// No active search narrowing the field — this is a truly
+				// passive default (cold boot, or the previous selection
+				// vanished with nothing else to explain the pick), not
+				// something the user chose. Pre-mark it as already-
+				// scheduled so retarget() never auto-follows it: that
+				// default could be any remote agent — including someone
+				// else's live session — silently getting a persistent
+				// background mesh proxy without anyone having looked at
+				// it. A non-empty filter, by contrast, IS deliberate
+				// intent even though typing it can ALSO repeatedly hit
+				// this same fallback as each partial match narrows the
+				// field — that churn is already handled correctly by the
+				// settle timer's own supersession (only the state after
+				// the user stops typing actually fires), so it must NOT
+				// be suppressed here too or a filtered-to selection would
+				// never follow at all. Any real navigation away and back
+				// (or an explicit enter/l) still follows normally either
+				// way.
+				m.lastSelForAttach = m.selName
+			}
 		}
 	}
 	if max := len(m.items) - m.listH(); m.scroll > max {
@@ -633,6 +736,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rows, m.projects, m.space, m.meshOK = msg.rows, msg.projects, msg.space, msg.mesh
 		rebuildCmd := m.rebuild()
 		m.maybeAutoRefresh()
+		m.reapMeshProxies()
 		if m.mode == "mesh" { // keep the mesh view live (standup replies etc.)
 			return m, tea.Batch(rebuildCmd, meshCmd())
 		}
@@ -652,11 +756,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if r == nil || r.Name != msg.name || !r.Remote || r.State == "dead" {
 			return m, nil
 		}
-		if m.wp.lastTarget == "attach:"+msg.name {
-			return m, nil // already the live attach (scrolled away and back)
-		}
-		m.wp.attachRemote(msg.name)
-		m.status, m.statErr = "attached to "+msg.name+" (mesh) — Ctrl-\\ detaches, Ctrl-C passes through", false
+		m.followMeshProxy(msg.name, r.State)
 		return m, nil
 
 	case execDoneMsg:
@@ -1118,15 +1218,13 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, runSelf("resume", "resume", name)
 		}
-		if sel.Remote && m.wp.lastTarget != "attach:"+name {
-			// selection already schedules a debounced auto-attach (see
+		if sel.Remote {
+			// selection already schedules a debounced follow (see
 			// retarget/attachSettleMsg) — this is the "don't make me wait
-			// ~250ms" override for anyone who wants it now. No-op if the
-			// debounce already settled and it's live, so pressing enter on
-			// an already-attached row doesn't force an unnecessary
-			// respawn/reconnect flicker.
-			m.wp.attachRemote(name)
-			m.status, m.statErr = "attached to "+name+" (mesh) — Ctrl-\\ detaches, Ctrl-C passes through", false
+			// ~250ms" override. followMeshProxy is idempotent-cheap when
+			// already following (just a switch-client), so no guard needed
+			// here for the already-settled case.
+			m.followMeshProxy(name, sel.State)
 		}
 		m.wp.focus()
 		return m, nil
@@ -1464,11 +1562,11 @@ const helpText = `sidebar
  q        quit workspace
 
  ·ext = mesh-only agent (another
- machine): selecting auto-attaches
- live (Ctrl-\ detaches, Ctrl-C passes
- through) — enter/l skip the wait.
- s/i/c still work — rest
- is local-only
+ machine): selecting follows it live
+ in the background (enter/l skip the
+ wait) — navigate away to stop, no
+ Ctrl-\ needed. s/i/c still work —
+ rest is local-only
 
 agent pane (right)
  click it or press enter, then type
@@ -1781,7 +1879,7 @@ func (m tuiModel) viewDetail() string {
 			host = "mesh"
 		}
 		l3 = " " + sDim.Render(clip("·ext — on "+host+", no local session", w-1))
-		l4 = " " + sDim.Render("auto-attaches (Ctrl-\\ detach) · s send")
+		l4 = " " + sDim.Render("follows live · navigate away to stop · s send")
 	} else {
 		dir := collapseHome(r.Dir)
 		if r.Branch != "" {
