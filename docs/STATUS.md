@@ -3,10 +3,99 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-09 (session 4 — rooms + read receipts, right-click
-fixed & extended to the agent pane, skip-permissions default, recursive repo
-discovery, quick terminal, file viewer, keymap. Headless E2E incl. live
-mesh read-receipt PASSED.)
+**Last updated:** 2026-07-10 (session 6 — rooms moved onto a shared ppz
+pipe; briefing gains room etiquette. Headless + live-mesh E2E PASSED.)
+
+## Session 6: rooms become a real shared channel (uncollared ppz pipe)
+
+User demoed the token-doubling bug: "message everyone" fanned out N unicast
+sends (`sendRoomCmd` loop), so each agent got what looked like a private DM,
+couldn't see peers' replies, and independently fetched the same GitHub issue
+list. Deep dive into ppz (WIRE.md, CHANGELOG, e2e tests, read.go) found the
+proper primitive: **uncollared pipes** (v0.31+) are symmetric many-to-many
+channels — per-session cursors (`cursors/<session>.json`), sender-attributed
+tabular render (read.go treats uncollared like inbox), `ppz send LEAF`
+resolves the uncollared pipe first. The old `broadcast` auto-pipe was removed
+in v0.30 — the room.go comment citing it was stale. ppz has NO turn-taking/
+locks/dedup; coordination is prompt-level protocol.
+
+Changes (all live-verified: scratch tmux + scratch state + real local mesh,
+`room-zztest` pipe, TUI send → agent `subs read` → in-room reply → TUI):
+
+- **`roomPipe(proj)`** (ppz.go): `room-<proj>` squeezed into ppz's segment
+  regex (32-char cap, dash rules) + `TestRoomPipe`. `ensureRoomPipe` creates
+  it idempotently (E_PIPE_TAKEN ok; E_NAME_TAKEN = handle clash, surfaced).
+  `subscribeRoom(session, pipe)` = `ppz subs add` under the agent's session.
+- **`sendRoomCmd`** (room.go): ONE send to the room pipe (was N unicasts).
+- **`gatherRoom`** unions the room-pipe history (`reread --since 24h`) with
+  the existing member-inbox scan, so DMs/standup replies still show. Room
+  messages render `sender → #proj`, no ✓✓ (shared-pipe ack semantics are
+  per-reader and unverified — check before wiring ticks to rooms).
+- **`launch()`** (cmds.go): creates the project's room pipe and subscribes
+  the agent's ppz session before the harness starts — so ppz's built-in
+  subs-alert nudge delivers room traffic. Agents spawned BEFORE this build
+  need kill+resume to join their room (same operational note as session 5's
+  skip-permissions).
+- **`meshBriefing`** (spec.go): TEAM ROOM paragraph — reply in-room not to
+  sender's inbox; addressed-agent-acts-alone; `CLAIMING: <task>` before
+  whole-room work (kills the duplicate-fetch behavior); discuss and divide.
+
+## Session 5: room chat becomes interactive, ppz-usage audit
+
+User reported agents still prompting for permission despite the session-4
+skip-permissions feature. Root cause: that feature landed at 16:28 today: it
+only takes effect at spawn/resume (`composeSpawn`/`composeResume` in
+spec.go), and muster never respawns a *live* agent — selecting one just
+`switch-client`s to its existing tmux pane (`workspace.go` `retarget`). The
+user's alice/george/terry were spawned at 09:15-09:23, hours before that
+code existed, and are still running the old argv (verified via `ps`: no
+`--dangerously-skip-permissions` on their live `claude` processes). Fix is
+operational, not code: `muster kill <name>` then `muster resume <name>` (or
+`r` in the sidebar on a killed agent) relaunches with current `injected()`
+logic and picks up the flag; conversation is preserved via `--resume
+<uuid>`. Not yet applied — killing a live, in-progress agent is the user's
+call, left to them.
+
+Also audited every ppz CLI call muster makes (ppz.go, cmds.go, room.go,
+tui.go) against ppz's actual source (cmd/ppz, internal/cli, internal/daemon)
+— subcommands/flags, JSON shapes, ack:read semantics, the terminal-share
+handle-exists branch, `ppz subs read` vs muster's own `read`/`reread`, env
+vars. All correct except one real bug, fixed:
+
+- **`ppzReady()` false positive** (ppz.go): checked `strings.Contains(out,
+  "logged in")` against `ppz status` text, but the *unauthenticated* state
+  literally prints `"not logged in"` — a substring match. Daemon-up-but-
+  logged-out was misreported as ready, so a fresh spawn would get wrapped in
+  `ppz terminal share` and fail unauthenticated instead of showing the
+  guided connect screen. Fixed to match the exact `"daemon: logged in"`
+  line.
+- Found but not fixed (logged for later, no user-visible urgency): `muster
+  ls`'s unread badge is actually a lifetime message count, not real
+  unread — mstrctl's ppz session never does a cursor-advancing `read`
+  (everything goes through `reread`/`ls`), so the cursor never moves and the
+  count never drops. `ppzReadInbox` (the one function that *would* do a
+  cursor-advancing read) is dead code, unused since the muster-relay design
+  was dropped. Candidate fix: run a cursor-advancing read when a room/agent
+  is actually opened, Slack-style.
+
+**Room chat is now a real group chat**, not just a transcript + the T-key
+standup broadcast: `muster room <proj> --watch` (room.go) has a compose line
+always focused at the bottom — type, hit enter, it fans out to every room
+member's ppz handle (no server-side broadcast pipe exists, per
+docs/WIRE.md, so this is client-side fan-out like `muster broadcast`, just
+project-scoped). Since typing is now live, `q` no longer closes the room —
+only esc (clears the draft, or closes if already empty) / ctrl-c do.
+Send errors show on their own status line below the input, not appended
+inline — an earlier version appended the error to the input line and it
+silently corrupted the whole frame (header scrolled off-screen) whenever
+the input+error text was long enough to soft-wrap past the pane width,
+which desyncs bubbletea's alt-screen row bookkeeping. Verified via headless
+tmux: failed send (nonexistent handle) renders a clean one-line error with
+header intact; real send to the live `alice` handle landed and rendered as
+`you → alice` in the transcript within ~2s. docs/KEYMAP.md's room-chat
+section updated. go vet/test/gofmt clean.
+
+## Prior sessions
 
 ## Session 4: rooms, right-click everywhere, quality-of-life
 
@@ -177,9 +266,9 @@ selected agent's REAL terminal (nested tmux client) — see DESIGN.md.
 - cmd+click on file paths is terminal-emulator territory (iTerm semantic
   history), not reachable from tmux — `v` / right-click is the muster way.
   glow isn't installed on this machine; .md falls back to bat (fine).
-- room shows member-inbox traffic only (no dedicated room pipe); an agent
-  messaging someone OUTSIDE the room shows in the recipient's room, not
-  the sender's. Acceptable until rooms get their own broadcast pipe.
+- rooms are backed by a shared uncollared pipe since session 6; the view
+  still unions member-inbox DMs, so an agent messaging someone OUTSIDE the
+  room shows in the recipient's room, not the sender's. Acceptable.
 - command-prompt inputs with double quotes would break rmenu's send/cron
   shell templates (user typing into their own shell — not a boundary).
 - Sidebar `i` inbox view still clipped to 38 cols (rmenu's popup inbox

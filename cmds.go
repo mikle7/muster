@@ -148,6 +148,15 @@ func launch(spec *AgentSpec, resume, noPpz bool) int {
 		}
 		// the wrapped agent must find `ppz` on PATH (subs read, send)
 		env["PATH"] = filepath.Dir(ppzBin()) + ":" + os.Getenv("PATH")
+		// join the project's shared room pipe before the harness starts, so
+		// room traffic reaches this agent via `ppz subs read` / the nudge
+		if proj := projectFor(loadProjects(), lsRow{Dir: spec.Dir, Repo: spec.Repo}); proj != "" {
+			if pipe, err := ensureRoomPipe(proj); err == nil {
+				subscribeRoom(spec.Name, pipe)
+			} else {
+				fmt.Fprintf(os.Stderr, "muster: room pipe: %v (continuing without)\n", err)
+			}
+		}
 		ppzq := shQuote(ppzBin())
 		if ppzSourceExists(spec.PpzHandle) {
 			// handle survives restarts (keeps inbox history + schedules);

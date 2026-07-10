@@ -98,6 +98,50 @@ func ppzSend(target, payload string, extra ...string) error {
 	return nil
 }
 
+// roomPipe is the shared uncollared pipe backing a project's room chat:
+// "room-" + the project name squeezed into ppz's segment regex
+// (^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$, max 32).
+func roomPipe(proj string) string {
+	var b []rune
+	for _, r := range strings.ToLower(proj) {
+		switch {
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+			b = append(b, r)
+		case len(b) > 0 && b[len(b)-1] != '-':
+			b = append(b, '-')
+		}
+	}
+	s := "room-" + strings.Trim(string(b), "-")
+	if len(s) > 32 {
+		s = s[:32]
+	}
+	return strings.TrimRight(s, "-")
+}
+
+// ensureRoomPipe creates proj's room pipe (uncollared, at root — the ctl
+// session never sets a namespace). Idempotent: an existing pipe is success.
+// E_NAME_TAKEN is NOT tolerated — it means the name clashes with a source
+// handle, which needs a human.
+func ensureRoomPipe(proj string) (string, error) {
+	if err := ensureCtlHandle(); err != nil {
+		return "", err
+	}
+	pipe := roomPipe(proj)
+	if out, err := ppzCmd(ctlSession, "pipe", "create", pipe).CombinedOutput(); err != nil {
+		if !strings.Contains(string(out), "E_PIPE_TAKEN") && !strings.Contains(string(out), "already exists") {
+			return "", errf("ppz pipe create %s: %s", pipe, out)
+		}
+	}
+	return pipe, nil
+}
+
+// subscribeRoom adds pipe to an agent session's subscriptions so room
+// traffic reaches it via `ppz subs read` / the idle nudge. Idempotent;
+// best-effort (the agent still works without the room).
+func subscribeRoom(session, pipe string) {
+	_, _ = ppzCmd(session, "subs", "add", pipe).CombinedOutput()
+}
+
 type ppzHeartbeat struct {
 	Handle  string
 	Status  string // online|stale|offline

@@ -182,6 +182,18 @@ func meshBriefing(s *AgentSpec) string {
 		"mstrctl) also messages you. When told to run 'ppz subs read', run it and act on every message, " +
 		"replying to senders by name. A message starting with STANDUP means: reply to its sender in under " +
 		"5 lines with your current task, progress, blockers, and what's next."
+	if proj := projectFor(loadProjects(), lsRow{Dir: s.Dir, Repo: s.Repo}); proj != "" {
+		pipe := roomPipe(proj)
+		b += " TEAM ROOM: '" + pipe + "' is a shared pipe the whole #" + proj + " team (and the user) reads — " +
+			"you are subscribed, its messages arrive via 'ppz subs read'. Reply to room messages IN the room " +
+			"(ppz send " + pipe + " '<text>'), never to the sender's inbox. Room etiquette: (1) a room message " +
+			"addressed to a specific agent is handled by that agent alone — everyone else stays silent unless " +
+			"they have something material to add; (2) before doing work whose result serves the whole room " +
+			"(fetching an issue list, triaging a backlog, summarizing state), post 'CLAIMING: <task>' to the " +
+			"room and check it wasn't already claimed — if a teammate claimed it, wait for their summary and " +
+			"build on that instead of redoing the fetch; (3) keep room messages short and conversational — " +
+			"discuss and divide, don't broadcast identical reports."
+	}
 	return b
 }
 
