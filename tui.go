@@ -84,7 +84,14 @@ func meshCmd() tea.Cmd {
 // popupSelf runs a muster command in a tmux display-popup — full width for
 // output the 38-col sidebar would clip (inbox, recap). Enter closes.
 func popupSelf(argv string) {
-	sh := selfExe() + " " + argv + `; printf '\n[enter to close] '; read -r _`
+	popupCmd(selfExe() + " " + argv)
+}
+
+// popupCmd runs an arbitrary shell command in a tmux display-popup — same
+// full-width treatment as popupSelf, for commands that aren't `muster …`
+// (e.g. `ppz terminal watch` for a mesh-only agent with no local pane).
+func popupCmd(cmd string) {
+	sh := cmd + `; printf '\n[enter to close] '; read -r _`
 	_, _ = tmuxRun("display-popup", "-E", "-w", "80%", "-h", "70%", "sh -c "+shQuote(sh))
 }
 
@@ -744,11 +751,23 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.selName = it.row.Name
 		m.retarget()
 		menu := []string{"display-menu", "-T", " " + it.row.Name + " ", "-x", mx, "-y", my}
-		if it.row.State == "dead" {
+		switch {
+		case it.row.Remote && it.row.State == "dead":
+			menu = append(menu, "(offline on the mesh — nothing to do here)", "", "")
+		case it.row.Remote:
+			// mesh-only: no local tmux/dir/worktree, so only the
+			// mesh-messaging actions apply — everything else is local-only
+			// (see updateNormal's sel.Remote guards).
+			menu = append(menu,
+				"watch live", "t", self+"Enter",
+				"send message…", "s", self+"s",
+				"inbox", "i", self+"i",
+				"schedule…", "c", self+"c")
+		case it.row.State == "dead":
 			menu = append(menu,
 				"resume", "r", self+"r",
 				"kill / remove…", "k", self+"K")
-		} else {
+		default:
 			menu = append(menu, "type into agent", "t", self+"Enter")
 			if m.wp.right != "" {
 				wpin := func(dir string) string {
@@ -1031,6 +1050,14 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if sel == nil {
 			return m, nil
 		}
+		if sel.Remote {
+			if sel.State == "dead" {
+				m.status, m.statErr = name+" looks offline on the mesh — nothing to resume from here", true
+				return m, nil
+			}
+			popupCmd(shQuote(ppzBin()) + " terminal watch " + shQuote(name))
+			return m, nil
+		}
 		if sel.State == "dead" {
 			return m, runSelf("resume", "resume", name)
 		}
@@ -1125,12 +1152,20 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if name == "" {
 			return m, nil
 		}
+		if sel.Remote {
+			m.status, m.statErr = "recap is local-only — "+name+" has no session on this machine", true
+			return m, nil
+		}
 		popupSelf("recap " + name)
 		return m, nil
 
 	case "f": // fresh context: flush handoff → /clear → re-inject ("R" = resume --all)
 		if sel == nil || sel.State == "dead" {
 			m.status, m.statErr = "select a live agent first", true
+			return m, nil
+		}
+		if sel.Remote {
+			m.status, m.statErr = "fresh-context refresh is local-only — "+name+" has no session on this machine", true
 			return m, nil
 		}
 		if sel.Harness != "claude" {
@@ -1148,6 +1183,10 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "w": // review handoff to a reviewer-role agent over the mesh
 		if name == "" {
+			return m, nil
+		}
+		if sel.Remote {
+			m.status, m.statErr = "review needs "+name+"'s local worktree — nothing to diff from here", true
 			return m, nil
 		}
 		return m, runSelf("review", "review", name)
@@ -1181,7 +1220,7 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "t": // quick shell in the agent's dir (or the space)
 		dir := m.space
-		if sel != nil {
+		if sel != nil && !sel.Remote { // remote rows have no local dir — fall back to space
 			dir = sel.Dir
 		}
 		if dir == "" {
@@ -1196,12 +1235,20 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status, m.statErr = "select a live agent first", true
 			return m, nil
 		}
+		if sel.Remote {
+			m.status, m.statErr = "file menu is local-only — "+name+" has no screen on this machine", true
+			return m, nil
+		}
 		fileMenu(sel.Name, m.wp.right)
 		return m, nil
 
 	case "V": // open the most recently mentioned file — no menu
 		if sel == nil || sel.State == "dead" {
 			m.status, m.statErr = "select a live agent first", true
+			return m, nil
+		}
+		if sel.Remote {
+			m.status, m.statErr = "file menu is local-only — "+name+" has no screen on this machine", true
 			return m, nil
 		}
 		files := screenFiles(sel.Tmux, sel.Dir)
@@ -1278,6 +1325,10 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if name == "" {
 			return m, nil
 		}
+		if sel.Remote {
+			m.status, m.statErr = name+" isn't a local agent — nothing to kill here", true
+			return m, nil
+		}
 		n := name
 		m.openPrompt(promptSpec{
 			label: "kill " + n, placeholder: "y = kill · y --rm = kill+remove worktree/spec",
@@ -1299,6 +1350,10 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		if name == "" {
+			return m, nil
+		}
+		if sel.Remote {
+			m.status, m.statErr = name+" isn't a local agent — nothing to resume here", true
 			return m, nil
 		}
 		return m, runSelf("resume", "resume", name)
@@ -1341,6 +1396,10 @@ const helpText = `sidebar
  g        refresh   esc leave room
  d        leave (fleet keeps running)
  q        quit workspace
+
+ ·ext = mesh-only agent (another
+ machine): enter/l watches it live,
+ s/i/c still work — rest is local-only
 
 agent pane (right)
  click it or press enter, then type
@@ -1593,7 +1652,11 @@ func (m tuiModel) renderItem(i int) string {
 	if r.CtxPct > 0 {
 		ctx = fmt.Sprintf("%d%%", int(r.CtxPct))
 	}
-	right := strings.TrimSpace(strings.Join([]string{unread, ctx, r.Age}, " "))
+	ext := ""
+	if r.Remote { // mesh-only agent, no local session — meshBody uses the same marker
+		ext = "·ext"
+	}
+	right := strings.TrimSpace(strings.Join([]string{ext, unread, ctx, r.Age}, " "))
 	body := fmt.Sprintf(" %s %-13s %*s", glyph, name, w-19, right)
 	if r.Name == m.selName {
 		return sSelected.Render(clip(body, w))
@@ -1621,8 +1684,12 @@ func (m tuiModel) viewDetail() string {
 	if r == nil {
 		return sep + "\n\n\n\n"
 	}
+	ageSuffix := ""
+	if r.Age != "" {
+		ageSuffix = " · " + r.Age
+	}
 	l1 := " " + stateStyle(r.State).Bold(true).Render(stateGlyph(r.State)+" "+clip(r.Name, 18)) +
-		sDim.Render("  "+r.State+" · "+r.Age)
+		sDim.Render("  "+r.State+ageSuffix)
 	var l2 string
 	switch {
 	case r.Reason != "" && r.Reason != "heartbeat":
@@ -1638,14 +1705,24 @@ func (m tuiModel) viewDetail() string {
 	default:
 		l2 = " " + sDim.Render("shell")
 	}
-	dir := collapseHome(r.Dir)
-	if r.Branch != "" {
-		dir += "  ⎇ " + r.Branch
-	}
-	l3 := " " + sDim.Render(clip(dir, w-1))
-	l4 := " " + sDim.Render(clip("$ "+r.Cmd, w-1))
-	if r.Role != "" {
-		l4 = " " + sDim.Render(clip("★ "+r.Role, w-1)) // the charter beats the argv
+	var l3, l4 string
+	if r.Remote {
+		host := r.Host
+		if host == "" {
+			host = "mesh"
+		}
+		l3 = " " + sDim.Render(clip("·ext — on "+host+", no local session", w-1))
+		l4 = " " + sDim.Render("enter/l watch live · s send · i inbox · c schedule")
+	} else {
+		dir := collapseHome(r.Dir)
+		if r.Branch != "" {
+			dir += "  ⎇ " + r.Branch
+		}
+		l3 = " " + sDim.Render(clip(dir, w-1))
+		l4 = " " + sDim.Render(clip("$ "+r.Cmd, w-1))
+		if r.Role != "" {
+			l4 = " " + sDim.Render(clip("★ "+r.Role, w-1)) // the charter beats the argv
+		}
 	}
 	return sep + "\n" + l1 + "\n" + l2 + "\n" + l3 + "\n" + l4
 }

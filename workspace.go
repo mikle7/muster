@@ -160,7 +160,9 @@ func (wp *workspacePanes) ensure(tuiWidth int) {
 }
 
 // retarget points the right pane at the selected agent: live agents get the
-// nested attach client switched (or respawned), dead ones a resume hint.
+// nested attach client switched (or respawned), dead ones a resume hint,
+// mesh-only ones (no local tmux session at all) a placeholder — attaching an
+// empty session name is a broken tmux command, not a graceful no-op.
 func (wp *workspacePanes) retarget(name, tmuxSess, state string) {
 	if wp.right == "" {
 		return
@@ -168,6 +170,8 @@ func (wp *workspacePanes) retarget(name, tmuxSess, state string) {
 	target := "none"
 	switch {
 	case name == "":
+	case tmuxSess == "":
+		target = "remote:" + name
 	case state == "dead":
 		target = "dead:" + name
 	default:
@@ -180,6 +184,10 @@ func (wp *workspacePanes) retarget(name, tmuxSess, state string) {
 	case target == "none":
 		_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, placeholderCmd(welcomeText))
 		_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", "agent")
+	case strings.HasPrefix(target, "remote:"):
+		msg := "agent '" + name + "' lives on the ppz mesh only\n(no local session on this machine).\n\nenter or l opens a live watch popup;\ns still sends it a message."
+		_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, placeholderCmd(msg))
+		_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", name+" (mesh)")
 	case state == "dead":
 		msg := "agent '" + name + "' is dead.\n\nenter or r in the sidebar resumes it with its EXACT original command\n(conversation and permissions included)."
 		_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, placeholderCmd(msg))

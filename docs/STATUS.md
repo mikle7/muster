@@ -3,10 +3,86 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-10 (session 8 — branch-in-sidebar + the
-context-refresh cycle: /clear made safe, tracked, and automated.
-vet/test/gofmt green; headless E2E PASSED. Session 7's merge review
-checklist below still applies — session 8 is uncommitted on top.)
+**Last updated:** 2026-07-10 (session 9 — remote ppz-mesh agents now show in
+the main sidebar, not just the M mesh view. vet/test/gofmt green; live
+cross-machine E2E on the user's real 3-machine mesh PASSED. Branch
+`feat/mesh-sidebar`, uncommitted here — pushed for review.)
+
+## Session 9: mesh agents in the main sidebar
+
+The user runs muster across 3 machines (this Mac + a Linux desktop + a Linux
+server) sharing one ppz-server. Cross-machine agents already worked fine via
+ppz directly (who/send/terminal watch), and the M mesh view already listed
+everyone — but the main sidebar (`gatherRows` in cmds.go) built its row list
+purely from local spec files (`listSpecs()`), so an agent running on a
+*different* machine never appeared there.
+
+Shipped:
+
+- **`buildRows`** (cmds.go): `gatherRows` split into itself (I/O: listSpecs +
+  ppzWho + ppzUnreadCounts) and a pure `buildRows(specs, hb, unread)` for
+  testability. After the usual local rows, `remoteRows` appends a synthetic
+  `lsRow` for every `ppzWho()` handle with no matching local spec — same
+  "ours" distinction meshBody already computes, narrowed to actual agents
+  (`heartbeat.harness != ""`; a bare human ppz login or muster's own
+  `mstrctl` control handle isn't an agent and stays off the sidebar). New
+  `lsRow.Remote`/`.Host` fields; Tmux/Dir/Branch/Wt stay zero — there's no
+  local process or worktree behind these rows. An offline heartbeat maps to
+  state `dead` regardless of its last-known `agent_state`.
+- **Remote rows are visually marked** (`·ext`, meshBody's existing
+  convention) in both the row list and the detail panel, which also swaps
+  the (empty) dir/branch/cmd lines for host + a one-line action hint.
+- **enter/l/tab** on a remote row pops up `ppz terminal watch <name>`
+  (popupCmd, a new arbitrary-command sibling to the existing popupSelf)
+  instead of trying to focus a local pane that doesn't exist. Dead-remote
+  shows a "nothing to resume from here" status instead of attempting
+  `muster resume` (which needs a local spec).
+- **Local-only actions guarded** for a selected remote row instead of
+  erroring: recap (e), refresh-context (f), review handoff (w), file menu
+  (v/V), kill (K), resume (r) all show a plain-English "local-only" status
+  message. `t` (terminal here) no longer silently blanks `m.space` when the
+  selection is remote. Right-click's agent menu gets a third branch
+  (remote / dead / local-live) instead of showing local-only items that
+  would just fail.
+- **Two bugs beyond the original plan, found while verifying it and fixed**:
+  (1) `agentHandle()` (cmds.go) resolved a name to its ppz handle by
+  requiring a *local* spec file — so `muster send`/`inbox`/`cron add`
+  against a remote-only agent failed "no such agent" even though the row is
+  visible and selectable. Now falls back to treating the name as a live
+  mesh handle directly when no local spec exists. (2)
+  `workspacePanes.retarget` (workspace.go) tried to tmux-attach an *empty*
+  session string the instant a remote row was merely selected (not just
+  entered) — `j`/`k` onto a remote row broke the right pane before this fix.
+  Added a `remote:` target case with a friendly placeholder, mirroring the
+  existing `dead:` case.
+
+Tests: `session9_test.go` — `buildRows`/`remoteRows` (remote row shape,
+no duplicate for a locally-spawned handle, non-agent/self filtering,
+offline→dead, unread passthrough) and `agentHandle`'s mesh fallback via a
+faked `ppz` binary (mirrors `TestPpzRunTimesOut`'s pattern).
+
+### Session 9 E2E evidence
+
+Headless local (scratch tmux + fake ppz binary simulating a mixed
+local+remote mesh): sidebar showed a dead local agent and one `·ext` remote
+row correctly bucketed and unduplicated; selecting the remote row rendered
+the mesh-only detail panel and placeholder right pane (no broken tmux
+attach); `K`/`e` on it produced the local-only status messages instead of
+erroring; the pre-existing local kill-confirm prompt was unaffected.
+
+**Live cross-machine** (real shared mesh, real agents): built + rsynced the
+branch to an isolated scratch dir on the Linux desktop (mikle-linux.local)
+over SSH, ran it under an isolated tmux server (`-L mstrtest`) + scratch
+state dir so the user's real, attached `muster` session there was never
+touched. `muster ls --json` and the live TUI both showed pixel-studios'
+real ivy/jack/quinn/remy (running on the Mac) as `remote:true` rows with
+correct host/harness/state/unread — go vet/build clean on Linux too. `s`
+(send) on a remote row delivered a real mesh message to ivy end-to-end,
+confirming the `agentHandle` fallback (ivy sent a heads-up afterward: it
+was a labelled, harmless test message). `ppz terminal watch ivy` verified
+standalone to stream her real live terminal. Scratch tmux server + dir
+torn down after; the user's real `muster` session and `~/repos/muster`
+checkout on that machine were never touched.
 
 ## Session 8: what's in that terminal + clear-not-compact
 

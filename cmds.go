@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -219,6 +220,8 @@ type lsRow struct {
 	CtxPct  float64 `json:"ctx_pct,omitempty"` // context window used %
 	FivePct float64 `json:"five_pct,omitempty"`
 	FiveEnd string  `json:"five_end,omitempty"` // HH:MM reset time
+	Remote  bool    `json:"remote,omitempty"`   // mesh-only: no local spec (other machine)
+	Host    string  `json:"host,omitempty"`     // remote: hostname from its heartbeat
 }
 
 func gatherRows() ([]lsRow, error) {
@@ -226,10 +229,19 @@ func gatherRows() ([]lsRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	hb := ppzWho()
-	unread := ppzUnreadCounts()
+	return buildRows(specs, ppzWho(), ppzUnreadCounts()), nil
+}
+
+// buildRows is gatherRows' pure core (no subprocess calls) so it's testable
+// with fabricated specs/heartbeats. Local rows come from specs, same as
+// always; remoteRows appends synthetic rows for mesh-only agents.
+func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, unread map[string]int) []lsRow {
+	ours := map[string]bool{}
 	var rows []lsRow
 	for _, s := range specs {
+		if s.PpzHandle != "" {
+			ours[s.PpzHandle] = true
+		}
 		state, reason := liveState(s, hb)
 		r := lsRow{
 			Name: s.Name, Role: s.Role, State: state, Reason: reason, Harness: s.Harness,
@@ -251,7 +263,44 @@ func gatherRows() ([]lsRow, error) {
 		}
 		rows = append(rows, r)
 	}
-	return rows, nil
+	return append(rows, remoteRows(hb, ours, unread)...)
+}
+
+// remoteRows surfaces mesh-only agents: a live ppz heartbeat with a detected
+// coding harness but no local spec here (it was spawned on a different
+// machine). Bare ppz sessions with no harness (a human's interactive login,
+// muster's own mstrctl control handle) aren't agents and stay off the
+// sidebar — same "ours" distinction meshBody already draws for the M view,
+// narrowed to actual agents. Tmux/Dir/Branch/Wt stay zero: there's no local
+// process or worktree behind these rows.
+func remoteRows(hb map[string]ppzHeartbeat, ours map[string]bool, unread map[string]int) []lsRow {
+	handles := make([]string, 0, len(hb))
+	for h := range hb {
+		handles = append(handles, h)
+	}
+	sort.Strings(handles)
+	var rows []lsRow
+	for _, h := range handles {
+		if ours[h] || h == ctlHandle {
+			continue
+		}
+		hbEntry := hb[h]
+		if hbEntry.Harness == "" {
+			continue
+		}
+		state := hbEntry.State
+		switch {
+		case hbEntry.Status == "offline":
+			state = "dead"
+		case state == "":
+			state = "unknown"
+		}
+		rows = append(rows, lsRow{
+			Name: h, State: state, Reason: "heartbeat", Harness: hbEntry.Harness,
+			Ppz: h, Unread: unread[h], Model: hbEntry.Model, Remote: true, Host: hbEntry.Host,
+		})
+	}
+	return rows
 }
 
 func printRows(rows []lsRow) {
@@ -481,15 +530,24 @@ func requirePpz() error {
 	return nil
 }
 
+// agentHandle resolves a name to its ppz handle. Agents spawned here have a
+// local spec (name may differ from handle in theory, though in practice
+// muster always sets them equal). Mesh-only agents — spawned on a different
+// machine, surfaced in the sidebar as a synthetic remote row — have no local
+// spec at all; if the name is a live mesh handle, use it directly rather
+// than failing "no such agent".
 func agentHandle(name string) (string, error) {
 	s, err := loadSpec(name)
-	if err != nil {
-		return "", errf("no such agent %q", name)
+	if err == nil {
+		if s.PpzHandle == "" {
+			return "", errf("agent %q is not on the mesh (spawned without ppz)", name)
+		}
+		return s.PpzHandle, nil
 	}
-	if s.PpzHandle == "" {
-		return "", errf("agent %q is not on the mesh (spawned without ppz)", name)
+	if _, onMesh := ppzWho()[name]; onMesh {
+		return name, nil
 	}
-	return s.PpzHandle, nil
+	return "", errf("no such agent %q", name)
 }
 
 func cmdSend(args []string) int {
