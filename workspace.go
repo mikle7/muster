@@ -213,7 +213,19 @@ func (wp *workspacePanes) retarget(name, tmuxSess, state string) {
 		_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, placeholderCmd(welcomeText))
 		_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", "agent")
 	case strings.HasPrefix(target, "remote:"):
-		wp.showRemotePlaceholder(name, "agent '"+name+"' lives on the ppz mesh only.\n\nenter or l attaches live — bidirectional keystrokes,\nCtrl-C passes through to the remote process,\nCtrl-\\ detaches.")
+		if strings.HasPrefix(wp.lastTarget, "attach:") {
+			// Already showing a live attach — to this row (a settle for it
+			// is in flight; nothing to do yet) or another (still selecting
+			// through rows, none settled). Either way, mere selection
+			// shouldn't kill/respawn it — only the debounced settle
+			// (attachSettleMsg in tui.go) decides to actually switch,
+			// which is what makes "scroll away and back before it fires"
+			// a no-op instead of a kill+reconnect flicker. lastTarget
+			// deliberately doesn't move here, so a later settle for this
+			// same name still matches "already attached" and skips too.
+			return
+		}
+		wp.showRemotePlaceholder(name, "agent '"+name+"' lives on the ppz mesh only.\n\nattaching live — bidirectional keystrokes,\nCtrl-C passes through to the remote process,\nCtrl-\\ detaches. (enter/l skips the wait)")
 	case state == "dead":
 		msg := "agent '" + name + "' is dead.\n\nenter or r in the sidebar resumes it with its EXACT original command\n(conversation and permissions included)."
 		if tmuxSess == "" { // remote row: no local spec, resume doesn't apply

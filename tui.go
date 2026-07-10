@@ -69,6 +69,29 @@ type execDoneMsg struct {
 }
 type meshMsg struct{ body string }
 
+// attachSettleDelay: how long a remote row must stay selected before
+// muster spawns `ppz terminal attach` for it — long enough to clear a
+// held-j scroll (key-repeat is ~30-40ms/step), short enough that attach's
+// own connect latency on top (dial + subscribe + JetStream scrollback
+// replay, ~100-300ms) doesn't push "land on row → see live screen" past
+// about a second.
+const attachSettleDelay = 250 * time.Millisecond
+
+// attachSettleMsg fires after a remote row has sat selected for
+// attachSettleDelay. gen guards against a stale timer outliving further
+// navigation — there's no way to cancel an in-flight tea.Cmd, so a
+// superseded one just gets dropped on arrival instead.
+type attachSettleMsg struct {
+	name string
+	gen  int
+}
+
+func attachSettleCmd(name string, gen int) tea.Cmd {
+	return tea.Tick(attachSettleDelay, func(time.Time) tea.Msg {
+		return attachSettleMsg{name: name, gen: gen}
+	})
+}
+
 func refreshCmd(seq int) tea.Cmd {
 	return func() tea.Msg {
 		rows, _ := gatherRows()
@@ -355,6 +378,13 @@ type tuiModel struct {
 	wp       workspacePanes
 	roomView string // project whose room chat owns the right pane ("" = agent)
 
+	// debounced auto-attach for remote rows (retarget's Cmd): selGen
+	// invalidates a stale settle timer superseded by further navigation;
+	// lastSelForAttach is the row name a settle was last scheduled for, so
+	// an unchanged selection (notably the 2s refresh tick) never reschedules.
+	selGen           int
+	lastSelForAttach string
+
 	mode      string // normal | prompt | form | view
 	prompt    promptSpec
 	input     textinput.Model
@@ -468,20 +498,39 @@ func (m *tuiModel) ensureVisible(itemIdx int) {
 }
 
 // retarget points the workspace's agent pane at the current selection —
-// unless a room chat owns it (cleared by selecting an agent or esc).
-func (m *tuiModel) retarget() {
+// unless a room chat owns it (cleared by selecting an agent or esc). For a
+// live remote row it also schedules a debounced auto-attach (the returned
+// Cmd): unlike a local row's cheap switch-client, `ppz terminal attach`
+// spawns a fresh process every time, so firing it on every j/k step would
+// spawn/kill one per row scrolled past. Scheduling itself is deduped
+// against lastSelForAttach, so calling this repeatedly with an unchanged
+// selection — notably every 2s refresh tick — never reschedules; only an
+// actual change in which row is selected does.
+func (m *tuiModel) retarget() tea.Cmd {
 	if m.roomView != "" {
 		m.wp.showRoom(m.roomView)
-		return
+		return nil
 	}
-	if r := m.selected(); r != nil {
-		m.wp.retarget(r.Name, r.Tmux, r.State)
-	} else {
+	r := m.selected()
+	if r == nil {
 		m.wp.retarget("", "", "")
+		m.lastSelForAttach = ""
+		return nil
 	}
+	m.wp.retarget(r.Name, r.Tmux, r.State)
+	if !r.Remote || r.State == "dead" {
+		m.lastSelForAttach = ""
+		return nil
+	}
+	if r.Name == m.lastSelForAttach {
+		return nil
+	}
+	m.lastSelForAttach = r.Name
+	m.selGen++
+	return attachSettleCmd(r.Name, m.selGen)
 }
 
-func (m *tuiModel) rebuild() {
+func (m *tuiModel) rebuild() tea.Cmd {
 	rows := filterRows(m.rows, m.filter)
 	if m.byPrio || m.filter != "" {
 		// a filtered view is a triage view: flat, attention first, no
@@ -513,7 +562,7 @@ func (m *tuiModel) rebuild() {
 	if m.scroll < 0 {
 		m.scroll = 0
 	}
-	m.retarget()
+	return m.retarget()
 }
 
 // maybeAutoRefresh launches the context-refresh cycle for any idle claude
@@ -562,8 +611,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 		m.wp.ensure(m.w)
-		m.retarget()
-		return m, nil
+		return m, m.retarget()
 
 	case tickMsg:
 		if msg.seq == -1 { // timer fired: kick a real refresh
@@ -583,17 +631,32 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshingAt = time.Time{}
 		m.rows, m.projects, m.space, m.meshOK = msg.rows, msg.projects, msg.space, msg.mesh
-		m.rebuild()
+		rebuildCmd := m.rebuild()
 		m.maybeAutoRefresh()
 		if m.mode == "mesh" { // keep the mesh view live (standup replies etc.)
-			return m, meshCmd()
+			return m, tea.Batch(rebuildCmd, meshCmd())
 		}
-		return m, nil
+		return m, rebuildCmd
 
 	case meshMsg:
 		if m.mode == "mesh" {
 			m.viewBody = msg.body
 		}
+		return m, nil
+
+	case attachSettleMsg:
+		if msg.gen != m.selGen {
+			return m, nil // superseded by further navigation
+		}
+		r := m.selected()
+		if r == nil || r.Name != msg.name || !r.Remote || r.State == "dead" {
+			return m, nil
+		}
+		if m.wp.lastTarget == "attach:"+msg.name {
+			return m, nil // already the live attach (scrolled away and back)
+		}
+		m.wp.attachRemote(msg.name)
+		m.status, m.statErr = "attached to "+msg.name+" (mesh) — Ctrl-\\ detaches, Ctrl-C passes through", false
 		return m, nil
 
 	case execDoneMsg:
@@ -688,12 +751,13 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// list rows
 	if y := msg.Y - m.listTop(); y >= 0 && y < m.listH() {
 		idx := m.scroll + y
+		var cmd tea.Cmd
 		if idx >= 0 && idx < len(m.items) {
 			switch it := m.items[idx]; it.kind {
 			case "agent", "sub": // the branch line clicks like its agent
 				m.selName = it.row.Name
 				m.roomView = ""
-				m.retarget()
+				cmd = m.retarget()
 			case "proj":
 				// the row is the room; the trailing + is the spawn button
 				if it.projName == "" || msg.X >= sidebarW-4 {
@@ -704,7 +768,7 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		return m, nil
+		return m, cmd
 	}
 	// buttons
 	if msg.Y == m.btnY() {
@@ -749,7 +813,7 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch it := m.items[idx]; it.kind {
 	case "agent", "sub":
 		m.selName = it.row.Name
-		m.retarget()
+		cmd := m.retarget()
 		menu := []string{"display-menu", "-T", " " + it.row.Name + " ", "-x", mx, "-y", my}
 		switch {
 		case it.row.Remote && it.row.State == "dead":
@@ -796,7 +860,7 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			menu = append(menu, "kill…", "k", self+"K")
 		}
 		_, _ = tmuxRun(menu...)
-		return m, nil
+		return m, cmd
 	case "proj":
 		m.menuProj, m.menuProjPath = it.projName, it.projPath
 		title := it.projName
@@ -857,9 +921,9 @@ func (m tuiModel) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.mode = "normal"
 		m.filter = ""
-		m.rebuild()
+		cmd := m.rebuild()
 		m.status, m.statErr = "filter cleared", false
-		return m, nil
+		return m, cmd
 	case "enter":
 		m.mode = "normal"
 		if m.filter != "" {
@@ -870,8 +934,7 @@ func (m tuiModel) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	m.filter = strings.TrimSpace(m.input.Value())
-	m.rebuild()
-	return m, cmd
+	return m, tea.Batch(cmd, m.rebuild())
 }
 
 func (m tuiModel) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1025,12 +1088,10 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "j", "down":
 		m.moveSel(1)
-		m.retarget()
-		return m, nil
+		return m, m.retarget()
 	case "k", "up":
 		m.moveSel(-1)
-		m.retarget()
-		return m, nil
+		return m, m.retarget()
 
 	case "g":
 		m.seq++
@@ -1038,13 +1099,13 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "o":
 		m.byPrio = !m.byPrio
-		m.rebuild()
+		cmd := m.rebuild()
 		if m.byPrio {
 			m.status, m.statErr = "sorted by attention (blocked first) — o restores projects", false
 		} else {
 			m.status, m.statErr = "grouped by project", false
 		}
-		return m, nil
+		return m, cmd
 
 	case "enter", "l", "tab":
 		if sel == nil {
@@ -1057,10 +1118,13 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, runSelf("resume", "resume", name)
 		}
-		if sel.Remote {
-			// unlike local rows (retarget() already switched the pane on
-			// mere selection — cheap), a remote row only gets the actual
-			// `ppz terminal attach` spawned here, on explicit intent.
+		if sel.Remote && m.wp.lastTarget != "attach:"+name {
+			// selection already schedules a debounced auto-attach (see
+			// retarget/attachSettleMsg) — this is the "don't make me wait
+			// ~250ms" override for anyone who wants it now. No-op if the
+			// debounce already settled and it's live, so pressing enter on
+			// an already-attached row doesn't force an unnecessary
+			// respawn/reconnect flicker.
 			m.wp.attachRemote(name)
 			m.status, m.statErr = "attached to "+name+" (mesh) — Ctrl-\\ detaches, Ctrl-C passes through", false
 		}
@@ -1097,13 +1161,13 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if m.filter != "" {
 			m.filter = ""
-			m.rebuild()
+			cmd := m.rebuild()
 			m.status, m.statErr = "filter cleared", false
-			return m, nil
+			return m, cmd
 		}
 		if m.roomView != "" {
 			m.roomView = ""
-			m.retarget()
+			return m, m.retarget()
 		}
 		return m, nil
 
@@ -1137,8 +1201,7 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selName = m.items[best].row.Name
 		m.roomView = ""
 		m.ensureVisible(best)
-		m.retarget()
-		return m, nil
+		return m, m.retarget()
 
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9": // jump to Nth agent
 		n := int(msg.String()[0] - '1')
@@ -1147,7 +1210,7 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selName = m.items[ring[n]].row.Name
 			m.roomView = ""
 			m.ensureVisible(ring[n])
-			m.retarget()
+			return m, m.retarget()
 		}
 		return m, nil
 
@@ -1401,9 +1464,10 @@ const helpText = `sidebar
  q        quit workspace
 
  ·ext = mesh-only agent (another
- machine): enter/l attaches live
- (Ctrl-\ detaches, Ctrl-C passes
- through) · s/i/c still work — rest
+ machine): selecting auto-attaches
+ live (Ctrl-\ detaches, Ctrl-C passes
+ through) — enter/l skip the wait.
+ s/i/c still work — rest
  is local-only
 
 agent pane (right)
@@ -1717,7 +1781,7 @@ func (m tuiModel) viewDetail() string {
 			host = "mesh"
 		}
 		l3 = " " + sDim.Render(clip("·ext — on "+host+", no local session", w-1))
-		l4 = " " + sDim.Render("enter/l attach (Ctrl-\\ detach) · s send")
+		l4 = " " + sDim.Render("auto-attaches (Ctrl-\\ detach) · s send")
 	} else {
 		dir := collapseHome(r.Dir)
 		if r.Branch != "" {

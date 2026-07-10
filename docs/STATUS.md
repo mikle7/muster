@@ -4,10 +4,70 @@
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
 **Last updated:** 2026-07-10 (session 10 — remote sidebar rows embed a real
-`ppz terminal attach` in the right pane instead of a read-only watch popup.
-vet/test/gofmt green; live E2E against a real ppz-wrapped throwaway target
-PASSED, including a real Ctrl-\ detach/re-attach cycle. Branch
+`ppz terminal attach` in the right pane, now with a debounced auto-attach
+on mere selection (no enter required) after Michael's feedback. vet/test/
+gofmt green; live E2E PASSED including scroll-through-doesn't-spawn and
+scroll-away-and-back-doesn't-respawn, both verified by PID. Branch
 `feat/remote-attach`, uncommitted here — pushed for review.)
+
+## Session 10 addendum: debounced auto-attach (no enter required)
+
+Michael's feedback on the enter/l-to-attach design above: he wants it to
+feel automatic on selection, like local rows — but agreed with the reason
+it wasn't built that way naively (spawn/kill per row scrolled past). Greg
+translated that into a concrete spec: a cancelable ~250ms settle timer
+keyed to the selected row, immediate-attach on enter/l as an override.
+Chud (who owns `ppz terminal attach`) then refined the interval (200-250ms,
+not longer — attach's own connect latency, dial+subscribe+JetStream replay,
+stacks on top of the settle before the user sees anything) and the
+bubbletea pattern (generation-token, not just name-matching, since a
+tea.Cmd can't be canceled once scheduled — a stale one just gets dropped on
+arrival by comparing its token against the model's current one).
+
+Shipped:
+
+- **`selGen`/`lastSelForAttach` on tuiModel**, `attachSettleMsg`/
+  `attachSettleCmd` (250ms `tea.Tick`, `const attachSettleDelay`).
+  `retarget()` (both the tuiModel wrapper and `workspacePanes`) now returns
+  `tea.Cmd`, threaded through all ~13 call sites (j/k, mouse click,
+  right-click select, filter narrowing at every keystroke, jump-to-
+  attention, 1-9 jump, room-view-leave, the periodic 2s tick). Scheduling
+  is deduped inside `retarget()` against `lastSelForAttach`, so an
+  unchanged selection — notably the periodic tick — never reschedules;
+  only an actual change in which row is selected does.
+- **enter/l/tab is now an override, not the trigger**: skips the wait, and
+  no-ops if the debounce already settled (checked via
+  `wp.lastTarget != "attach:"+name`) so pressing it on an already-live row
+  doesn't force a pointless respawn/reconnect flicker.
+- **A real bug found only by testing the interaction, not either piece in
+  isolation**: `workspacePanes.retarget()`'s remote-row placeholder swap
+  ran unconditionally on every selection change — so scrolling away from
+  an attached row and back within the settle window killed and respawned
+  the attach anyway (different PID, verified), exactly the flicker chud
+  said to avoid. Fixed: that placeholder swap now no-ops whenever
+  something's already attached (`lastTarget` starts with `"attach:"`),
+  local rows unaffected — leaving `lastTarget` untouched so a later settle
+  for the SAME row still recognizes "already attached" and skips too. Only
+  the debounce's own settle-fire (not mere selection) now ever kills/
+  respawns a live attach.
+
+### Session 10 addendum E2E evidence
+
+Same safety discipline as before: real ppz, disposable
+`ppz terminal share <throwaway> -- sh` targets created/destroyed per run,
+selection always via the `/` filter narrowed to exactly the safe target(s)
+before any interaction. Verified: selecting a remote row auto-attached
+within ~150-250ms with zero keypresses; rapid j/k bouncing between two
+safe rows (80ms apart, well under the settle) produced no attach at all
+until navigation stopped; letting it settle then attached correctly;
+bouncing away from an ALREADY-attached row and back within the window left
+the exact same OS process running (`pane_pid` identical before/after —
+this is what caught the bug above, a title/content check alone wouldn't
+have); settling on a genuinely different row correctly killed the old
+attach and connected fresh (different content, correct title). Local rows
+re-verified unaffected: instant embed on select, no debounce delay,
+unchanged by any of the ~13 call-site edits. go vet/build/test/gofmt clean
+throughout.
 
 ## Session 10: real attach instead of watch-only, for remote rows
 
