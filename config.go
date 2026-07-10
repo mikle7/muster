@@ -17,6 +17,7 @@ type Config struct {
 	RepoRoots       []string `json:"repo_roots,omitempty"`       // picker scan roots
 	RepoDepth       int      `json:"repo_depth,omitempty"`       // picker scan depth, default 3
 	StallAfterMin   *int     `json:"stall_after_min,omitempty"`  // "working" with no hook events for this long = stalled (0 disables, default 10)
+	RefreshCtxPct   *int     `json:"refresh_ctx_pct,omitempty"`  // auto context-refresh when idle past this ctx% (0 disables, default 75)
 }
 
 func configPath() string { return filepath.Join(dataDir(), "config.json") }
@@ -73,11 +74,13 @@ func writeDefaultConfig() {
 	}
 	on := true
 	stall := 10
+	refresh := 75
 	c := Config{
 		SkipPermissions: &on,
 		RepoRoots:       []string{"~/Repos", "~/repos", "~/code", "~/src", "~/Projects", "~/dev", "~/work"},
 		RepoDepth:       3,
 		StallAfterMin:   &stall,
+		RefreshCtxPct:   &refresh,
 	}
 	b, _ := json.MarshalIndent(c, "", "  ")
 	if os.MkdirAll(dataDir(), 0o755) == nil {

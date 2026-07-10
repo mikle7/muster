@@ -209,6 +209,7 @@ type lsRow struct {
 	Dir     string  `json:"dir"`
 	Repo    string  `json:"repo,omitempty"`
 	Branch  string  `json:"branch,omitempty"`
+	Wt      bool    `json:"wt,omitempty"` // muster-created worktree
 	Tmux    string  `json:"tmux"`
 	Ppz     string  `json:"ppz,omitempty"`
 	Unread  int     `json:"unread"`
@@ -235,6 +236,11 @@ func gatherRows() ([]lsRow, error) {
 			Dir: s.Dir, Repo: s.Repo, Branch: s.Branch, Tmux: s.TmuxSession, Ppz: s.PpzHandle,
 			Unread: unread[s.PpzHandle], Age: fmtAge(s.CreatedAt), Cmd: shJoin(s.Argv),
 		}
+		// what's REALLY checked out beats what spawn recorded
+		if lb := liveBranch(s.Dir); lb != "" {
+			r.Branch = lb
+		}
+		r.Wt = s.Worktree != ""
 		if s.SessionUUID != "" {
 			if u := loadUsage(s.SessionUUID); u != nil {
 				r.Model, r.CtxPct, r.FivePct = u.Model, u.CtxPct, u.FiveHrPct

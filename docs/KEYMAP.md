@@ -27,6 +27,7 @@ Design rules, in priority order:
 | enter, l, tab | focus the agent's terminal (resume if dead) | selected |
 | esc | clear filter / leave room chat / back | view |
 | e | recap popup: state, recent hook events, git, inbox — the 10-second catch-up | selected |
+| f | fresh context: flush handoff → /clear → re-inject notes (also fires automatically at refresh_ctx_pct when idle) | selected |
 | a, S | spawn form (project preselected) | fleet |
 | P | add project (repo picker, filter-as-you-type) | fleet |
 | t | shell split in the agent's dir (space dir if none) | selected |
@@ -56,7 +57,7 @@ for the right-clicked project). Not for fingers.
 
 | gesture | where | action |
 |---------|-------|--------|
-| left-click agent row | sidebar | select (right pane follows) |
+| left-click agent row (or its ⎇ branch line) | sidebar | select (right pane follows) |
 | left-click project row | sidebar | **room chat** — the space's traffic |
 | left-click the `+` on a project row | sidebar | spawn form for that project |
 | left-click title bar | sidebar | mesh view |

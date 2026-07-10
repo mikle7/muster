@@ -47,6 +47,15 @@ func dataDir() string {
 func agentsDir() string { return filepath.Join(dataDir(), "agents") }
 func statusDir() string { return filepath.Join(dataDir(), "status") }
 
+// handoffPath: the agent's rolling handoff file — the user's clear-not-compact
+// workflow made first-class. The briefing tells the agent to keep it current;
+// `muster refresh` flushes it, /clear wipes the context, and the SessionStart
+// hook re-injects it. Keyed by NAME (not session uuid): it must survive the
+// very rotation it exists for.
+func handoffPath(name string) string {
+	return filepath.Join(dataDir(), "handoff", name+".md")
+}
+
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}$`)
 
 func validName(n string) error {
@@ -181,7 +190,11 @@ func meshBriefing(s *AgentSpec) string {
 		"branch/sha/path, not diffs); 'ppz who' shows who's online. The user (and their control handle " +
 		"mstrctl) also messages you. When told to run 'ppz subs read', run it and act on every message, " +
 		"replying to senders by name. A message starting with STANDUP means: reply to its sender in under " +
-		"5 lines with your current task, progress, blockers, and what's next."
+		"5 lines with your current task, progress, blockers, and what's next." +
+		" CONTEXT HANDOFF: maintain " + handoffPath(s.Name) + " as a rolling markdown handoff — current " +
+		"task, state, key decisions, file paths, exact next steps. Update it after every significant step, " +
+		"not just when asked: when your context is cleared (muster does this at high context usage), that " +
+		"file is automatically re-injected and is ALL your future self gets. Write it to resume cold."
 	if proj := projectFor(loadProjects(), lsRow{Dir: s.Dir, Repo: s.Repo}); proj != "" {
 		pipe := roomPipe(proj)
 		b += " TEAM ROOM: '" + pipe + "' is a shared pipe the whole #" + proj + " team (and the user) reads — " +

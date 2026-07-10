@@ -102,10 +102,24 @@ func tickEvery() tea.Cmd {
 // ---- sidebar items ----------------------------------------------------------
 
 type sideItem struct {
-	kind     string // "proj" | "agent"
+	kind     string // "proj" | "agent" | "sub" (agent's branch line)
 	projName string // proj: display name ("" = unassigned bucket)
 	projPath string
-	row      lsRow // agent
+	row      lsRow // agent + sub
+}
+
+// withSub appends the agent item and, when it has a branch, a dim ⎇ sub-line
+// beneath it — "which checkout is in that terminal" at a glance (the herdr
+// habit the user asked for). Its own item keeps mouse hit-testing at one
+// line per item; clicks on it select its agent.
+func withSub(items []sideItem, it sideItem) []sideItem {
+	items = append(items, it)
+	if it.row.Branch != "" {
+		sub := it
+		sub.kind = "sub"
+		items = append(items, sub)
+	}
+	return items
 }
 
 // stateRank orders agents by how much they need you (herdr's priority sort).
@@ -155,9 +169,9 @@ func buildPriorityItems(rows []lsRow) []sideItem {
 		}
 		return sorted[i].Unread > sorted[j].Unread
 	})
-	items := make([]sideItem, len(sorted))
-	for i, r := range sorted {
-		items[i] = sideItem{kind: "agent", row: r}
+	var items []sideItem
+	for _, r := range sorted {
+		items = withSub(items, sideItem{kind: "agent", row: r})
 	}
 	return items
 }
@@ -185,7 +199,7 @@ func buildItems(rows []lsRow, projects []Project, space string) []sideItem {
 	for _, p := range projects {
 		items = append(items, sideItem{kind: "proj", projName: p.Name, projPath: p.Path})
 		for _, r := range byProj[p.Name] {
-			items = append(items, sideItem{kind: "agent", row: r, projName: p.Name, projPath: p.Path})
+			items = withSub(items, sideItem{kind: "agent", row: r, projName: p.Name, projPath: p.Path})
 		}
 	}
 	if loose := byProj[""]; len(loose) > 0 {
@@ -193,7 +207,7 @@ func buildItems(rows []lsRow, projects []Project, space string) []sideItem {
 			items = append(items, sideItem{kind: "proj", projName: ""})
 		}
 		for _, r := range loose {
-			items = append(items, sideItem{kind: "agent", row: r})
+			items = withSub(items, sideItem{kind: "agent", row: r})
 		}
 	}
 	return items
@@ -495,6 +509,27 @@ func (m *tuiModel) rebuild() {
 	m.retarget()
 }
 
+// maybeAutoRefresh launches the context-refresh cycle for any idle claude
+// agent past the ctx threshold — the user's clear-not-compact ritual with the
+// human taken out of the loop. Idle-only (never yank a working agent), one
+// in-flight per agent (marker), background self-exec so the 2s tick never
+// blocks on a minutes-long cycle.
+func (m *tuiModel) maybeAutoRefresh() {
+	pct := refreshCtxPct()
+	if pct <= 0 {
+		return
+	}
+	for _, r := range m.rows {
+		if !shouldAutoRefresh(r.Harness, r.State, r.CtxPct, pct) || refreshInFlight(r.Name) {
+			continue
+		}
+		setRefreshMark(r.Name) // claim before the subprocess starts
+		_ = exec.Command(selfExe(), "refresh", r.Name).Start()
+		m.status, m.statErr = fmt.Sprintf("auto-refresh %s (ctx %d%% ≥ %d%%): handoff → /clear → resume",
+			r.Name, int(r.CtxPct), pct), false
+	}
+}
+
 // ---- layout -----------------------------------------------------------------
 // Fixed vertical layout (1 line per item keeps mouse hit-testing trivial):
 //   y0 title · list (listH) · detail (detailH, first line is the separator)
@@ -542,6 +577,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshingAt = time.Time{}
 		m.rows, m.projects, m.space, m.meshOK = msg.rows, msg.projects, msg.space, msg.mesh
 		m.rebuild()
+		m.maybeAutoRefresh()
 		if m.mode == "mesh" { // keep the mesh view live (standup replies etc.)
 			return m, meshCmd()
 		}
@@ -647,7 +683,7 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		idx := m.scroll + y
 		if idx >= 0 && idx < len(m.items) {
 			switch it := m.items[idx]; it.kind {
-			case "agent":
+			case "agent", "sub": // the branch line clicks like its agent
 				m.selName = it.row.Name
 				m.roomView = ""
 				m.retarget()
@@ -704,7 +740,7 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	self := "send-keys -t " + m.wp.left + " "
 	switch it := m.items[idx]; it.kind {
-	case "agent":
+	case "agent", "sub":
 		m.selName = it.row.Name
 		m.retarget()
 		menu := []string{"display-menu", "-T", " " + it.row.Name + " ", "-x", mx, "-y", my}
@@ -727,6 +763,7 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 			menu = append(menu,
 				"recap", "e", self+"e",
+				"refresh context…", "f", self+"f",
 				"send message…", "s", self+"s",
 				"terminal here", "!", self+"t",
 				"open a file…", "v", self+"v",
@@ -734,7 +771,7 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				"inbox", "i", self+"i",
 				"", "", "",
 				"review handoff", "w", self+"w")
-			if it.row.Branch != "" {
+			if it.row.Wt {
 				menu = append(menu, "done (merge & clean)…", "D", self+"D")
 			}
 			menu = append(menu, "kill…", "k", self+"K")
@@ -1091,6 +1128,24 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		popupSelf("recap " + name)
 		return m, nil
 
+	case "f": // fresh context: flush handoff → /clear → re-inject ("R" = resume --all)
+		if sel == nil || sel.State == "dead" {
+			m.status, m.statErr = "select a live agent first", true
+			return m, nil
+		}
+		if sel.Harness != "claude" {
+			m.status, m.statErr = name+" isn't a claude agent — nothing to /clear", true
+			return m, nil
+		}
+		if refreshInFlight(name) {
+			m.status, m.statErr = name+" is already refreshing", false
+			return m, nil
+		}
+		setRefreshMark(name) // claim now — the subprocess re-marks on start
+		_ = exec.Command(selfExe(), "refresh", name).Start()
+		m.status, m.statErr = "refreshing "+name+": handoff → /clear → resume", false
+		return m, nil
+
 	case "w": // review handoff to a reviewer-role agent over the mesh
 		if name == "" {
 			return m, nil
@@ -1101,7 +1156,7 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if sel == nil {
 			return m, nil
 		}
-		if sel.Branch == "" {
+		if !sel.Wt { // live Branch is set for ANY git checkout now — done needs a muster worktree
 			m.status, m.statErr = name+" has no worktree — done is for worktree agents", true
 			return m, nil
 		}
@@ -1265,6 +1320,7 @@ const helpText = `sidebar
  /        filter fleet (esc clears)
  enter/l  type into the agent →
  e        recap: events, git, inbox
+ f        fresh context (handoff→/clear)
  a / S    spawn (form)  P add project
  t        terminal in agent/space dir
  v        file menu (v then 1-9)
@@ -1514,6 +1570,17 @@ func (m tuiModel) renderItem(i int) string {
 			pad = 1
 		}
 		return sProj.Render("▍"+label) + mark + strings.Repeat(" ", pad) + sDim.Render("+")
+	}
+	if it.kind == "sub" { // the agent's checkout, dim, under its row
+		b := "⎇ " + it.row.Branch
+		if it.row.Wt {
+			b += " ·wt"
+		}
+		body := "   " + clip(b, w-4)
+		if it.row.Name == m.selName {
+			return sSelected.Render(fmt.Sprintf("%-*s", w, body))
+		}
+		return sDim.Render(body)
 	}
 	r := it.row
 	glyph := stateGlyph(r.State)

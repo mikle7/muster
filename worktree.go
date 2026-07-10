@@ -80,6 +80,64 @@ func copyWorktreeInclude(repo, wt string) {
 	}
 }
 
+// liveBranch reads the branch actually checked out in dir. spec.Branch only
+// knows what spawn created — regular agents have none, and any agent can
+// switch branches mid-session; the sidebar should show what's really in that
+// terminal (herdr got this right). Pure file reads (no git subprocess — this
+// runs for the whole fleet on the TUI's 2s tick): .git may be a directory
+// (clone) or a file ("gitdir: <path>", worktrees). Detached HEAD → short sha.
+func liveBranch(dir string) string {
+	for {
+		if gitDir := resolveGitDir(dir); gitDir != "" {
+			return headBranch(gitDir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir || dir == "" {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func resolveGitDir(dir string) string {
+	p := filepath.Join(dir, ".git")
+	fi, err := os.Stat(p)
+	if err != nil {
+		return ""
+	}
+	if fi.IsDir() {
+		return p
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	gd, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir:")
+	if !ok {
+		return ""
+	}
+	gd = strings.TrimSpace(gd)
+	if !filepath.IsAbs(gd) {
+		gd = filepath.Join(dir, gd)
+	}
+	return gd
+}
+
+func headBranch(gitDir string) string {
+	b, err := os.ReadFile(filepath.Join(gitDir, "HEAD"))
+	if err != nil {
+		return ""
+	}
+	head := strings.TrimSpace(string(b))
+	if ref, ok := strings.CutPrefix(head, "ref: "); ok {
+		return strings.TrimPrefix(ref, "refs/heads/")
+	}
+	if len(head) >= 8 {
+		return head[:8] // detached
+	}
+	return ""
+}
+
 // worktreeDirty reports why a worktree is unsafe to remove ("" = clean:
 // no uncommitted changes, no untracked files, no unpushed commits).
 func worktreeDirty(dir string) string {

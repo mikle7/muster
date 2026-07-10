@@ -3,11 +3,85 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-10 (session 7 merged into master alongside
-sessions 5–6 — competitive research sweep + stalled state, recap,
-done/review workflow, worktree setup hook, fleet triage keys. Merge left
-UNCOMMITTED for user review; dogfood script + walkthrough in
-docs/DOGFOOD.md. vet/test/gofmt green; headless E2E PASSED.)
+**Last updated:** 2026-07-10 (session 8 — branch-in-sidebar + the
+context-refresh cycle: /clear made safe, tracked, and automated.
+vet/test/gofmt green; headless E2E PASSED. Session 7's merge review
+checklist below still applies — session 8 is uncommitted on top.)
+
+## Session 8: what's in that terminal + clear-not-compact
+
+Two user asks: (1) herdr showed the branch/worktree per agent — muster's
+sidebar only had names; (2) the user's context workflow (rolling handoff
+md + /clear at high ctx%, never /compact) should be first-class and
+automated. Verified against current Claude Code docs
+(code.claude.com/docs/en/sessions, /hooks) before building:
+**/clear ROTATES the session id**; SessionStart fires with
+`source:"clear"` + the new id; SessionStart hook stdout
+(hookSpecificOutput.additionalContext, 10k cap) is injected into the
+fresh context; `--append-system-prompt` is a process flag so the
+identity briefing survives /clear on its own. Note: docs don't
+explicitly confirm the flag-persistence point — confirm during live
+dogfood (agent should still know its name/role after a manual /clear).
+
+Shipped (all tested, session8_test.go):
+
+- **⎇ branch sub-line in the sidebar**: every agent row grows a dim
+  second line with the LIVE checked-out branch (`liveBranch`: pure file
+  reads of .git/HEAD, walks up from subdirs, resolves worktree gitdir
+  files, detached → short sha — no git subprocess on the 2s tick).
+  Worktree agents marked `·wt`. Implemented as its own sideItem kind
+  ("sub") so hit-testing stays 1-line-per-item; clicking it selects its
+  agent; j/k/1-9/u skip it. **Guard fix**: `done`/`D` and the menu item
+  now key off the new lsRow.Wt (muster-created worktree), not
+  Branch != "" — live Branch is set for ANY git checkout now.
+- **Session-id adoption** (status.go): the hook sink, on SessionStart,
+  re-points the spec at a rotated session id (MUSTER_AGENT names the
+  agent; Argv untouched — faithful-resume tests still pin that). Events
+  history migrates to the new uuid; stale status/usage dropped. Before
+  this, a manual /clear silently froze status/ctx% and left resume
+  targeting the pre-clear snapshot.
+- **Handoff re-injection**: briefing now instructs agents to maintain
+  `<state>/handoff/<name>.md` continuously (keyed by NAME — survives
+  rotation). On SessionStart source=clear the sink emits
+  additionalContext with the handoff tail (9k cap, latest wins) +
+  orientation preamble. Missing file → guidance to reconstruct from git.
+- **`muster refresh <name>`** (refresh.go; sidebar `f`, right-click
+  "refresh context…"): flush prompt → wait idle (MUSTER_REFRESH_WAIT_S,
+  default 300s; aborts safely pre-/clear on timeout) → /clear → wait for
+  id rotation (20s, warns if none) → "continue from handoff" kick.
+  In-flight marker `<state>/refresh/<name>.json` (10m TTL) prevents
+  double-fires.
+- **Auto-refresh**: TUI tick fires the cycle when an agent is
+  claude+idle+ctx% ≥ threshold (`refresh_ctx_pct` config /
+  MUSTER_REFRESH_PCT, default 75, 0 off). Idle-only = never yanks a
+  working agent; it catches them next time they surface. Background
+  self-exec so the tick never blocks.
+
+### Session 8 E2E evidence (headless, Linux sandbox, scratch server)
+
+`ls --json` showed the live branch and tracked an agent-side
+`git checkout -b` mid-session; TUI capture showed `⎇ hotfix/live-switch`
+under alice and `⎇ mstr/fix2 ·wt` under a worktree agent. Hook-driven:
+PreToolUse under old uuid → SessionStart source=clear with rotated id →
+spec re-pointed, argv untouched, events migrated
+(PreToolUse+SessionStart under new uuid), old status/usage gone,
+additionalContext JSON contained the handoff note; source=startup
+emitted nothing. Full `muster refresh` cycle with faked status
+transitions: flush prompt + /clear + kick all landed in the pane in
+order, exit 0, marker cleaned. go vet/test/gofmt clean (14 new tests).
+
+### Session 8 open questions for live dogfood
+
+- Confirm briefing survival after manual /clear (docs silent on the
+  flag-persistence point — ask alice who she is post-clear).
+- `/clear` is typed into claude's input via send-keys; if a fuzzy
+  autocomplete ever ranks another slash command above the exact match,
+  the Enter would fire the wrong one. Watch the first live run.
+- Auto-refresh threshold 75% is a first guess (statusline ctx% arrives
+  only for claude agents). Tune like stall_after_min.
+- ppz-side: consider a handoff-flush nudge via mesh instead of
+  send-keys if typed prompts ever collide with a user mid-composition
+  (agent input box is shared with the user by design).
 
 ## Session 7: what the rest of the market taught us
 

@@ -21,6 +21,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   menu                    tmux popup picker (bind a key to this)
   resume <name>|--all     restart dead agents with their EXACT original command
   kill <name> [--rm]      kill session; --rm also removes worktree+spec (guarded)
+  refresh <name>          context reset without amnesia: flush handoff → /clear → re-inject
   recap <name>            the 10-second catch-up: state, events, git, inbox
   done <name> [--squash]  merge the worktree branch back, kill, clean up (guarded)
   review <name> [--by r]  hand the branch to a reviewer agent over the mesh
@@ -39,8 +40,8 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   hook                    (internal) claude hook sink
 
 state: ⚙ working  ⌛ stalled (working, no events)  ✋ blocked  ✔ idle  ☠ dead
-env: MUSTER_DEFAULT_CMD, MUSTER_PPZ, MUSTER_STATE_DIR, MUSTER_STALL_MIN
-config: <state>/config.json — skip_permissions (default true), repo_roots, repo_depth, stall_after_min
+env: MUSTER_DEFAULT_CMD, MUSTER_PPZ, MUSTER_STATE_DIR, MUSTER_STALL_MIN, MUSTER_REFRESH_PCT
+config: <state>/config.json — skip_permissions (default true), repo_roots, repo_depth, stall_after_min, refresh_ctx_pct (auto context refresh at this ctx% when idle; 0 off, default 75)
 worktree env: .worktreeinclude copies files; .muster/setup runs in the pane before the agent
 `
 
@@ -50,7 +51,7 @@ func main() {
 	}
 	cmds := map[string]func([]string) int{
 		"ui": cmdTUI, "spawn": cmdSpawn, "ls": cmdLs, "attach": cmdAttach, "menu": cmdMenu,
-		"resume": cmdResume, "kill": cmdKill,
+		"resume": cmdResume, "kill": cmdKill, "refresh": cmdRefresh,
 		"recap": cmdRecap, "done": cmdDone, "review": cmdReview,
 		"send": cmdSend, "broadcast": cmdBroadcast, "inbox": cmdInbox,
 		"cron": cmdCron, "project": cmdProject, "standup": cmdStandup, "room": cmdRoom,

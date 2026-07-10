@@ -241,10 +241,19 @@ func cmdHook(args []string) int {
 	var payload struct {
 		HookEventName string `json:"hook_event_name"`
 		SessionID     string `json:"session_id"`
+		Source        string `json:"source"` // SessionStart: startup|resume|clear|compact
 		Message       string `json:"message"`
 	}
 	if json.Unmarshal(raw, &payload) != nil || payload.SessionID == "" {
 		return 0
+	}
+	// /clear ROTATES the session id (SessionStart announces the new one).
+	// Without adoption the agent keeps running but muster reads the old uuid
+	// forever: status/ctx freeze into a false "stalled", and resume targets
+	// the pre-clear snapshot. MUSTER_AGENT is in every muster pane's env, so
+	// the sink can re-point the spec before any state is written.
+	if payload.HookEventName == "SessionStart" {
+		adoptRotatedSession(os.Getenv("MUSTER_AGENT"), payload.SessionID)
 	}
 	state, reason := hookEventState(payload.HookEventName, payload.Message)
 	if state == "" {
@@ -266,7 +275,91 @@ func cmdHook(args []string) int {
 	if state == "blocked" && (prev == nil || prev.State != "blocked") {
 		notifyBlocked(payload.SessionID, reason)
 	}
+	// a fresh post-/clear context gets the agent's handoff notes back —
+	// stdout from a SessionStart hook is injected as context (docs:
+	// hookSpecificOutput.additionalContext), so nothing needs re-explaining
+	if payload.HookEventName == "SessionStart" && payload.Source == "clear" {
+		emitHandoffContext(os.Getenv("MUSTER_AGENT"))
+	}
 	return 0
+}
+
+// adoptRotatedSession re-points agent's spec at a new session uuid, migrating
+// the event history (recap must survive a clear) and dropping stale status/
+// usage files. No-op when the id is unchanged or the agent is unknown. Argv
+// is untouched — faithful resume stays sacred; only the resume TARGET moves,
+// which is exactly what makes resume faithful after a rotation.
+func adoptRotatedSession(agent, newID string) {
+	if agent == "" || newID == "" {
+		return
+	}
+	s, err := loadSpec(agent)
+	if err != nil || s.SessionUUID == newID {
+		return
+	}
+	old := s.SessionUUID
+	s.SessionUUID = newID
+	if saveSpec(s) != nil {
+		return
+	}
+	if old != "" {
+		migrateEvents(old, newID)
+		clearStatus(old)
+		_ = os.Remove(usagePath(old)) // ctx% restarts at unknown, honest
+	}
+}
+
+// migrateEvents moves old's event history under the new uuid (prepended —
+// the new session's own events may already exist).
+func migrateEvents(old, newID string) {
+	ob, err := os.ReadFile(eventsPath(old))
+	if err != nil || len(ob) == 0 {
+		_ = os.Remove(eventsPath(old))
+		return
+	}
+	nb, _ := os.ReadFile(eventsPath(newID))
+	if atomicWrite(eventsPath(newID), append(ob, nb...)) == nil {
+		_ = os.Remove(eventsPath(old))
+	}
+}
+
+// emitHandoffContext prints SessionStart hook JSON injecting the agent's
+// handoff notes into the just-cleared context. The identity briefing
+// (--append-system-prompt) is a process flag and survives /clear on its own —
+// the handoff is the only thing a clear loses that matters. Docs cap
+// additionalContext at 10k chars; keep the TAIL (latest notes win).
+func emitHandoffContext(agent string) {
+	if b := handoffHookJSON(agent); b != nil {
+		fmt.Println(string(b))
+	}
+}
+
+func handoffHookJSON(agent string) []byte {
+	if agent == "" {
+		return nil
+	}
+	const capChars = 9000
+	b, _ := os.ReadFile(handoffPath(agent))
+	notes := strings.TrimSpace(string(b))
+	if notes == "" {
+		notes = "(handoff file is empty — reconstruct from the repo: git log, git diff, docs, your inbox.)"
+	}
+	if len(notes) > capChars {
+		notes = "…" + notes[len(notes)-capChars:]
+	}
+	ctx := "Your context was just cleared (muster context refresh). You are the same agent with the same " +
+		"role — your system-prompt briefing still applies. Your handoff notes from before the clear:\n\n" +
+		notes + "\n\nContinue from these notes and keep the handoff file updated as you work."
+	out, err := json.Marshal(map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName":     "SessionStart",
+			"additionalContext": ctx,
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // notifyBlocked posts a macOS notification naming the blocked agent.
