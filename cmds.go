@@ -117,6 +117,42 @@ func cmdSpawn(args []string) int {
 	return launch(spec, false, *noPpz, setup)
 }
 
+// cmdQ is the quick-spawn shorthand: auto-names the agent "chat-<hex4>",
+// runs in the current directory, lands in the workspace bucket (no project).
+// Useful for throwaway chat sessions that don't belong to any project.
+func cmdQ(args []string) int {
+	// derive a short 4-hex-char suffix from a fresh UUID
+	id := newUUID()
+	id = strings.ReplaceAll(id, "-", "")
+	if len(id) >= 4 {
+		id = id[:4]
+	}
+	name := "chat-" + id
+	argv := args
+	if len(argv) == 0 {
+		if def := os.Getenv("MUSTER_DEFAULT_CMD"); def != "" {
+			argv = strings.Fields(def)
+		} else {
+			argv = []string{"claude"}
+		}
+	}
+	dir, _ := os.Getwd()
+	spec := &AgentSpec{
+		Name:        name,
+		Argv:        argv,
+		Env:         map[string]string{},
+		Dir:         dir,
+		TmuxSession: tmuxSession(name),
+		CreatedAt:   time.Now(),
+	}
+	spec.Harness = detectHarness(argv)
+	if spec.Harness == "claude" {
+		spec.SessionUUID = newUUID()
+	}
+	fmt.Printf("spawning %s in %s\n", name, collapseHome(dir))
+	return launch(spec, false, false, "")
+}
+
 // launch starts the tmux session for spec, wrapping in ppz terminal share
 // when the mesh is available. Shared by spawn and resume. setup (fresh
 // worktree spawns only) runs in the pane before everything else — composed

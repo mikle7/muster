@@ -915,7 +915,7 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.menuProj, m.menuProjPath = it.projName, it.projPath
 		title := it.projName
 		if title == "" {
-			title = "unassigned"
+			title = "workspace"
 		}
 		menu := []string{"display-menu", "-T", " " + title + " ", "-x", mx, "-y", my,
 			"new agent…", "a", self + "F6",
@@ -1807,7 +1807,7 @@ func (m tuiModel) renderItem(i int) string {
 	if it.kind == "proj" {
 		name := it.projName
 		if name == "" {
-			name = "unassigned"
+			name = "workspace"
 		}
 		label := clip(name, w-8)
 		mark := ""

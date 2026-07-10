@@ -16,6 +16,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
 
   spawn <name> [--role txt] [-C dir | --repo dir -b branch] [-e K=V]... [--] [cmd...]
                           start an agent (default cmd: $MUSTER_DEFAULT_CMD or claude)
+  q [cmd...]              quick spawn: auto-named chat-XXXX in cwd, workspace bucket
   ls [--json] [--watch]   every agent: state, unread, age
   attach <name>           go to an agent (switch-client inside tmux)
   menu                    tmux popup picker (bind a key to this)
@@ -51,7 +52,7 @@ func main() {
 		os.Exit(cmdTUI(nil))
 	}
 	cmds := map[string]func([]string) int{
-		"ui": cmdTUI, "spawn": cmdSpawn, "ls": cmdLs, "attach": cmdAttach, "menu": cmdMenu,
+		"ui": cmdTUI, "spawn": cmdSpawn, "q": cmdQ, "ls": cmdLs, "attach": cmdAttach, "menu": cmdMenu,
 		"resume": cmdResume, "kill": cmdKill, "refresh": cmdRefresh,
 		"recap": cmdRecap, "done": cmdDone, "review": cmdReview,
 		"send": cmdSend, "broadcast": cmdBroadcast, "inbox": cmdInbox,
