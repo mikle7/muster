@@ -3,8 +3,101 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-10 (session 6 — rooms moved onto a shared ppz
-pipe; briefing gains room etiquette. Headless + live-mesh E2E PASSED.)
+**Last updated:** 2026-07-10 (session 7 merged into master alongside
+sessions 5–6 — competitive research sweep + stalled state, recap,
+done/review workflow, worktree setup hook, fleet triage keys. Merge left
+UNCOMMITTED for user review; dogfood script + walkthrough in
+docs/DOGFOOD.md. vet/test/gofmt green; headless E2E PASSED.)
+
+## Session 7: what the rest of the market taught us
+
+Research first: 4 parallel sweeps over ~80 primary sources across 14
+competitors (herdr, claude-squad, uzi, Tmux-Orchestrator, agent-farm,
+vibe-kanban, Crystal, Conductor, Sculptor, Omnara, OpenCode, Terragon,
+Cursor BG agents, Codex cloud, Jules, container-use). Full evidence with
+URLs: **docs/COMPETITORS.md**. Headlines: scraping-based status is every
+tmux tool's top bug source (we're immune, keep it that way); "which agent
+needs me" triage is the product; worktrees isolate code not environments;
+review/merge is the real bottleneck; wrappers that hide the harness die.
+
+(Section written as "session 5" before master's agent claimed 5–6;
+renumbered to 7. The branch name stays session5-competitive.)
+
+Shipped (developed on worktree .wt/session5, branch session5-competitive,
+now merged here; all guarded by tests):
+
+- **Stalled state (⌛)**: hooks say working but no event for
+  `stall_after_min` (default 10; MUSTER_STALL_MIN; 0 off) → derived
+  `stalled` at read time (applyStall, pure fn, tested). Ranks between
+  blocked and working in attention sort; red in the sidebar; counted in
+  the new header triage counts ("✋2 ⌛1 ⚙3").
+- **Event history + recap**: hook sink appends every event to
+  `status/<uuid>.events.jsonl` (128KiB trim → last 200). `muster recap
+  <name>` = state+reason, role, usage, dir/⎇, cmd, worktree
+  diffstat/uncommitted/last-commits, event timeline, recent inbox.
+  Sidebar `e` and right-click "recap" open it in a display-popup.
+- **`muster done <name>` [--squash|--keep-branch|--force]** (sidebar `D`,
+  right-click on worktree agents): merge into the repo's checked-out
+  branch → kill → remove worktree → delete branch → drop spec. Refuses on
+  uncommitted worktree (msg suggests `muster send <name> 'commit…'`),
+  refuses on dirty repo, aborts conflicts cleanly ("ask the agent to
+  rebase"). Merge helpers unit-tested against real temp repos (happy,
+  dirty-refusal, conflict-abort).
+- **`muster review <name> [--by r]`** (sidebar `w`, right-click): mesh
+  message to a reviewer agent (default: first live agent with "review" in
+  its role) with branch, checkout path, commits, diffstat vs the repo's
+  HEAD branch, and the reply protocol (APPROVE/CHANGES to mstrctl).
+- **Worktree setup hook**: `.muster/setup` or `.muster-setup.sh` at repo
+  root runs IN the pane, in the fresh worktree, BEFORE the agent (visible;
+  best-effort; spawn-only; never in Argv — TestSetupNeverInArgv pins it).
+- **Fleet triage**: `/` live filter (name/role/state/branch/dir), `u`
+  jump-to-attention (blocked → stalled → unread), `1`–`9` positional
+  jumps, header per-state counts. Sidebar `i` inbox + `e` recap use
+  display-popups (kills the 38-col clip known-issue); pinned splits now
+  titled with the agent name (`muster wpin`, self-exec'd from menus).
+
+### Session 7 candidate-next-steps pass (2026-07-10)
+
+The user asked for all of session 4's "candidate next steps". Steps 2–3
+(done/review, filter/jump keys) shipped above. The rest:
+
+- **Step 1 (dogfood), headless half DONE**: 3-agent fleet with roles
+  across 2 projects, faked claude statuses — header `✋1 ⌛1 ⚙1`, `o`
+  sort (blocked→stalled→working), `u` jump to dave with promoted
+  permission_prompt reason, `3` jump to stalled peter, `/game` filter to
+  dave by role, `D` on a non-worktree agent shows the friendly guard,
+  TUI survives `e`/popup keys with no client attached. The live-mesh
+  half (rooms etiquette, Peter-reviews-a-PR, real standup) CANNOT run
+  here — no ppz binary/mesh in the sandbox → **docs/FOLLOWUP.md**.
+- **Step 4 (menu tuning), code half DONE**: sidebar right-click menus now
+  compute client coords from `#{pane_left}/#{pane_top}` (verified =0/1 in
+  the workspace layout, matching the old +2 guess) instead of hardcoding;
+  robust under zoom/splits. The by-feel placement check needs a real
+  client → FOLLOWUP.md. Pinned-pane titles were fixed above (wpin).
+- **Step 5 (pipescloud.io)**: purely operational (interactive browser
+  device flow on the user's machine) — nothing to code; steps written in
+  FOLLOWUP.md §3.
+
+### Session 7 E2E evidence (headless, Linux sandbox, scratch server)
+
+Spawned a worktree agent from a repo with `.muster/setup` → marker file
+present in the worktree before the agent ran; `done` refused while
+`b.txt` was uncommitted (guard msg), then merged `mstr/feat` into main
+(--no-ff commit visible in log), removed worktree + branch + spec. Faked
+a 25m-stale working status → `ls` showed `⌛ stalled (no events for
+25m)`; `recap` rendered the event timeline (working→blocked→working);
+TUI header showed `⌛1`, `/xyz` filter narrowed to the
+nothing-matches empty state with the filter echoed in the header and the
+`/ ›` input at the bottom. go vet + go test (9 new tests) + gofmt clean.
+NOTE: sandbox tmux servers die between test shells — kill-path prints
+weren't exercised; cmdDone reuses tmuxKillSession (session-1 tested).
+
+### Review checklist for the user (this uncommitted merge)
+
+1. `git diff --cached master` (the whole merge is staged, nothing committed).
+2. Run `.dev/dogfood.sh`, then follow docs/DOGFOOD.md — it exercises every
+   session-5/6/7 feature on a fresh fleet.
+3. If good: `git commit` (the prepared merge message is in .git/MERGE_MSG).
 
 ## Session 6: rooms become a real shared channel (uncollared ppz pipe)
 
@@ -269,21 +362,43 @@ selected agent's REAL terminal (nested tmux client) — see DESIGN.md.
 - rooms are backed by a shared uncollared pipe since session 6; the view
   still unions member-inbox DMs, so an agent messaging someone OUTSIDE the
   room shows in the recipient's room, not the sender's. Acceptable.
+- unread badge counts lifetime messages, not unread (see session 5 notes;
+  `ppzReadInbox` is dead code awaiting the Slack-style cursor fix).
 - command-prompt inputs with double quotes would break rmenu's send/cron
   shell templates (user typing into their own shell — not a boundary).
-- Sidebar `i` inbox view still clipped to 38 cols (rmenu's popup inbox
-  isn't); consider popups for sidebar inbox/schedules too.
-- Pinned split panes get default titles (hostname), not the agent name.
+- ~~Sidebar `i` inbox clipped to 38 cols~~ fixed session 7 (popup); the
+  `C` schedules list still renders in the sidebar (rarely long — fine).
+- ~~Pinned split panes get default titles~~ fixed session 7 (wpin).
+- Stall threshold (10m) is a guess — one long tool call (big build) can
+  false-positive. Tune after dogfood; MUSTER_STALL_MIN=0 disables.
+- `review` picks the FIRST live role~review agent; no round-robin.
+- 2026-07-10 incident (9-agent fleet): laptop froze under load; NATS
+  reconnect churn after the stall broke the ppz READ path
+  (E_SERVER_UNREACHABLE) while who/status stayed up. Contributors: every
+  agent's PTY repaints stream to JetStream (~2MB/10min per busy agent —
+  a ppz-side throttle is FOLLOWUP material), and muster's 2s tick piled
+  up hung ppz subprocesses. muster side fixed same day: every ppz call
+  now has a hard timeout (ppzRun, default 10s, MUSTER_PPZ_TIMEOUT_MS)
+  and the TUI refresh is single-flight (no stacking while one hangs).
+  Recovery: `ppz daemon restart`, then `muster resume --all` for any
+  agents whose terminal-share wrappers dropped.
 - 5h % arrives only after an agent's first API response (Pro/Max only);
   rate_limits needs Claude Code ≥2.1.191.
 - tmux-resurrect stale mstr-* interplay unchanged (session-1 note).
 
 ## Candidate next steps (in value order)
 
-1. Human dogfood: fleet with roles, real standup, room chat during a
-   multi-agent task, review handoff (the Peter-reviews-a-PR loop).
-2. `muster done <name>` (merge → kill → rm worktree) + a "review this
-   branch" one-key handoff to a reviewer-role agent.
-3. Keymap future keys: `/` filter, `u` jump-to-blocked, number jumps.
-4. Menu position tuning + pinned-pane titles after dogfood.
-5. Point the mesh at hosted pipescloud.io for always-on schedules.
+All five session-4 candidates are now either shipped or blocked on the
+user's machine — the machine-bound remainder lives in **docs/FOLLOWUP.md**
+(live-mesh E2E, real-mouse menu feel, pipescloud.io login, rebuild).
+
+1. ~~Human dogfood~~ headless half done (session 7); live-mesh half →
+   FOLLOWUP §1, real-mouse half → FOLLOWUP §2.
+2. ~~`muster done` + review handoff~~ shipped session 7.
+3. ~~Keymap future keys (`/`, `u`, 1–9)~~ shipped session 7.
+4. ~~Menu position + pinned-pane titles~~ code half shipped session 7
+   (pane_left/pane_top coords, wpin titles); feel check → FOLLOWUP §2.
+5. ~~pipescloud.io~~ operational only → FOLLOWUP §3.
+
+Fresh candidates after that: unread-badge cursor fix (FOLLOWUP §5),
+comparative review of N attempts (PLAN backlog), stalled notifications.

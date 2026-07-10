@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -32,13 +33,58 @@ func ppzCmd(session string, args ...string) *exec.Cmd {
 	return c
 }
 
+// Every ppz call muster makes goes through ppzOut (stdout+stderr mixed) or
+// ppzJSON (stdout only — stderr must not pollute parsed JSON), both with a
+// hard timeout. A wedged daemon once turned the TUI's 2s tick into an
+// unbounded pileup of hung subprocesses on an already-struggling laptop
+// (2026-07-10 incident) — muster must degrade to "pipes off", not amplify.
+
+func ppzTimeout() time.Duration {
+	if v := os.Getenv("MUSTER_PPZ_TIMEOUT_MS"); v != "" {
+		if n, err := time.ParseDuration(v + "ms"); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 10 * time.Second
+}
+
+func ppzRun(session string, combined bool, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), ppzTimeout())
+	defer cancel()
+	c := exec.CommandContext(ctx, ppzBin(), args...)
+	c.Env = append(os.Environ(), "PPZ_SESSION="+session, "NO_COLOR=1", "PPZ_UPDATE_CHECK=0")
+	c.WaitDelay = 2 * time.Second // SIGKILL stragglers that ignore the ctx kill
+	var out []byte
+	var err error
+	if combined {
+		out, err = c.CombinedOutput()
+	} else {
+		out, err = c.Output()
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return out, errf("ppz %s timed out after %s (daemon wedged? ppz daemon restart)", args[0], ppzTimeout())
+	}
+	return out, err
+}
+
+func ppzOut(session string, args ...string) ([]byte, error) {
+	return ppzRun(session, true, args...)
+}
+
+func ppzJSON(session string, args ...string) ([]byte, error) {
+	return ppzRun(session, false, args...)
+}
+
 // ppzStatusText is the raw `ppz status` output — already the best short
 // human summary of the mesh (daemon, server, account, nats).
 func ppzStatusText() string {
 	if ppzBin() == "" {
 		return "ppz CLI not found (set MUSTER_PPZ or install ppz)"
 	}
-	out, _ := ppzCmd(ctlSession, "status").CombinedOutput()
+	out, err := ppzOut(ctlSession, "status")
+	if err != nil && len(out) == 0 {
+		return "ppz status: " + err.Error()
+	}
 	return strings.TrimSpace(string(out))
 }
 
@@ -59,7 +105,7 @@ func ppzReady() bool {
 	if time.Since(readyCache.at) < 10*time.Second {
 		return readyCache.ok
 	}
-	out, err := ppzCmd(ctlSession, "status").CombinedOutput()
+	out, err := ppzOut(ctlSession, "status")
 	// exact "daemon: logged in" — "daemon: not logged in" / "authentication
 	// error" both contain the bare substring "logged in" and were false
 	// positives here (ppz status has no --json form to check structurally).
@@ -71,17 +117,17 @@ func ppzReady() bool {
 // ensureCtlHandle makes sure the mstrctl control handle exists and is
 // current for the muster-ctl session. Idempotent.
 func ensureCtlHandle() error {
-	out, err := ppzCmd(ctlSession, "get", "handle").Output()
+	out, err := ppzJSON(ctlSession, "get", "handle")
 	if err == nil && strings.TrimSpace(string(out)) == ctlHandle {
 		return nil
 	}
 	// create (tolerate taken), then set current
-	if out, err := ppzCmd(ctlSession, "source", "create", ctlHandle).CombinedOutput(); err != nil {
+	if out, err := ppzOut(ctlSession, "source", "create", ctlHandle); err != nil {
 		if !strings.Contains(string(out), "E_SOURCE_TAKEN") && !strings.Contains(string(out), "E_NAME_TAKEN") {
-			return errf("ppz source create %s: %s", ctlHandle, out)
+			return errf("ppz source create %s: %s (%v)", ctlHandle, out, err)
 		}
-		if out, err := ppzCmd(ctlSession, "set", "handle", ctlHandle).CombinedOutput(); err != nil {
-			return errf("ppz set handle: %s", out)
+		if out, err := ppzOut(ctlSession, "set", "handle", ctlHandle); err != nil {
+			return errf("ppz set handle: %s (%v)", out, err)
 		}
 	}
 	return nil
@@ -92,8 +138,8 @@ func ppzSend(target, payload string, extra ...string) error {
 		return err
 	}
 	args := append([]string{"send", target, payload}, extra...)
-	if out, err := ppzCmd(ctlSession, args...).CombinedOutput(); err != nil {
-		return errf("ppz send: %s", out)
+	if out, err := ppzOut(ctlSession, args...); err != nil {
+		return errf("ppz send: %s (%v)", strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }
@@ -127,7 +173,7 @@ func ensureRoomPipe(proj string) (string, error) {
 		return "", err
 	}
 	pipe := roomPipe(proj)
-	if out, err := ppzCmd(ctlSession, "pipe", "create", pipe).CombinedOutput(); err != nil {
+	if out, err := ppzOut(ctlSession, "pipe", "create", pipe); err != nil {
 		if !strings.Contains(string(out), "E_PIPE_TAKEN") && !strings.Contains(string(out), "already exists") {
 			return "", errf("ppz pipe create %s: %s", pipe, out)
 		}
@@ -139,7 +185,7 @@ func ensureRoomPipe(proj string) (string, error) {
 // traffic reaches it via `ppz subs read` / the idle nudge. Idempotent;
 // best-effort (the agent still works without the room).
 func subscribeRoom(session, pipe string) {
-	_, _ = ppzCmd(session, "subs", "add", pipe).CombinedOutput()
+	_, _ = ppzOut(session, "subs", "add", pipe)
 }
 
 type ppzHeartbeat struct {
@@ -158,7 +204,7 @@ func ppzWho() map[string]ppzHeartbeat {
 	if !ppzReady() {
 		return res
 	}
-	out, err := ppzCmd(ctlSession, "who", "--json").Output()
+	out, err := ppzJSON(ctlSession, "who", "--json")
 	if err != nil {
 		return res
 	}
@@ -196,7 +242,7 @@ type ppzEnvelope struct {
 // ppzReadInbox reads (cursor-advancing) new messages on handle's inbox,
 // from the relay's own session so each agent inbox has one relay cursor.
 func ppzReadInbox(session, handle string) ([]ppzEnvelope, error) {
-	out, err := ppzCmd(session, "read", handle+".inbox", "--json").Output()
+	out, err := ppzJSON(session, "read", handle+".inbox", "--json")
 	if err != nil {
 		// "no new messages" exits non-zero on some paths; treat empty as ok
 		if len(strings.TrimSpace(string(out))) == 0 {
@@ -220,7 +266,7 @@ func ppzReadInbox(session, handle string) ([]ppzEnvelope, error) {
 // ppzReread replays retained history on target without moving any cursor
 // (envelopes newest-last). since is a ppz duration like "6h".
 func ppzReread(target, since string) []ppzEnvelope {
-	out, err := ppzCmd(ctlSession, "reread", target, "--json", "--since", since).Output()
+	out, err := ppzJSON(ctlSession, "reread", target, "--json", "--since", since)
 	if err != nil && len(strings.TrimSpace(string(out))) == 0 {
 		return nil
 	}
@@ -239,7 +285,7 @@ func ppzReread(target, since string) []ppzEnvelope {
 
 // ppzScheduleText is `ppz schedule ls` verbatim (already a tidy table).
 func ppzScheduleText() string {
-	out, _ := ppzCmd(ctlSession, "schedule", "ls").CombinedOutput()
+	out, _ := ppzOut(ctlSession, "schedule", "ls")
 	return strings.TrimSpace(string(out))
 }
 
@@ -256,7 +302,7 @@ func ppzLs(pattern string) []ppzPipeRow {
 	if pattern != "" {
 		args = append(args, pattern)
 	}
-	out, err := ppzCmd(ctlSession, args...).Output()
+	out, err := ppzJSON(ctlSession, args...)
 	if err != nil {
 		return nil
 	}

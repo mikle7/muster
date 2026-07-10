@@ -21,8 +21,12 @@ Design rules, in priority order:
 | key | action | scope |
 |-----|--------|-------|
 | j / k, ↓ / ↑ | select next/previous agent | selection |
+| 1–9 | jump to Nth agent in the list | selection |
+| u | jump to whoever needs you most: blocked → stalled → unread | selection |
+| / | filter the fleet (name/role/state/branch/dir); enter keeps it, esc clears | view |
 | enter, l, tab | focus the agent's terminal (resume if dead) | selected |
-| esc | leave room chat / back | view |
+| esc | clear filter / leave room chat / back | view |
+| e | recap popup: state, recent hook events, git, inbox — the 10-second catch-up | selected |
 | a, S | spawn form (project preselected) | fleet |
 | P | add project (repo picker, filter-as-you-type) | fleet |
 | t | shell split in the agent's dir (space dir if none) | selected |
@@ -30,8 +34,10 @@ Design rules, in priority order:
 | V | open the *most recently mentioned* file instantly, no menu | selected |
 | s | send message | selected |
 | b | broadcast | all live |
+| w | review handoff — message a reviewer-role agent with branch + diffstat | selected |
+| D | done: merge the worktree branch back, kill, clean up (y confirms) | selected |
 | T | standup — every agent reports | all live |
-| i | inbox | selected |
+| i | inbox (full-width popup) | selected |
 | c / C | schedule prompt / list schedules | selected / all |
 | M | pipes/mesh view (team, traffic, connect) | mesh |
 | K | kill (y confirms, y --rm removes) | selected |
@@ -59,8 +65,8 @@ for the right-clicked project). Not for fingers.
 | wheel | sidebar / room | scroll |
 
 The right-pane menu is self-contained (native tmux prompts): send and
-schedule prompt at the bottom of the screen, inbox opens a popup, kill asks
-y/n. No sidebar focus needed. Its split right/down/up/left (l/j/u/h) open a
+schedule prompt at the bottom of the screen, recap and inbox open popups,
+review hands off directly, done and kill ask y/n. No sidebar focus needed. Its split right/down/up/left (l/j/u/h) open a
 shell in the agent's dir on that side of the pane — herdr semantics; the
 sidebar menu's splits instead pin extra views of the agent.
 
@@ -95,6 +101,5 @@ no longer closes the room — only esc/ctrl-c do.
 
 ## Candidate future keys (unassigned, deliberately)
 
-- `/` filter agents by name (when fleets outgrow one screen)
-- `u` jump to the most attention-worthy agent (first blocked)
-- number keys 1–9: jump to Nth agent
+- `x` compare N agents' branches side by side (the "review OLD vs NEW#1 vs
+  NEW#2" wishlist from the research — needs a diff UI story first)

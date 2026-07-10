@@ -30,7 +30,13 @@ $ muster cron add api-fix --every 4h "check CI on your branch, fix if red"
   plugins, and `ssh … tmux attach` all just work. muster never owns a PTY.
 - **No screen scraping.** Status comes from Claude Code hooks (installed
   per-agent via `--settings`, your own settings untouched) and ppz
-  heartbeats. Not from regexing the screen.
+  heartbeats. Not from regexing the screen. And because events are real,
+  muster can tell you an agent is **stalled** (working, but silent for
+  10+ minutes) — the thing spinners can't.
+- **The whole loop, not just spawn.** `.muster/setup` bootstraps each
+  fresh worktree's environment in the agent's own pane; `recap` catches
+  you up after time away; `review` hands a branch to your reviewer agent
+  by name; `done` merges it back and cleans everything up, guarded.
 - **Agents talk to each other.** Every agent gets a mesh handle. Agents
   message agents (`ppz send api-fix 'heads up …'`), you message agents
   (`muster send`), and read-receipts flow back automatically.
@@ -107,11 +113,14 @@ never owns a PTY, and your tmux config is untouched.
 
 | | |
 |---|---|
-| `spawn <name> [--role txt] [-C dir \| --repo dir -b branch] [--] [cmd…]` | start an agent (worktree per branch, `.worktreeinclude` copied) |
+| `spawn <name> [--role txt] [-C dir \| --repo dir -b branch] [--] [cmd…]` | start an agent (worktree per branch, `.worktreeinclude` copied, `.muster/setup` run in-pane) |
 | `standup` | every agent reports task/progress/blockers/next to your inbox |
-| `ls [--json] [--watch]` | fleet status: ⚙ working ✋ blocked ✔ idle ☠ dead |
+| `ls [--json] [--watch]` | fleet status: ⚙ working ⌛ stalled ✋ blocked ✔ idle ☠ dead |
+| `recap <name>` | the 10-second catch-up: state, recent events, git, inbox |
 | `attach <name>` / `menu` | jump to an agent / tmux popup picker |
 | `resume <name> \| --all` | restart dead agents exactly as launched |
+| `done <name> [--squash]` | merge the worktree branch back, kill, clean up — guarded |
+| `review <name> [--by r]` | hand the branch to a reviewer-role agent over the mesh |
 | `kill <name> [--rm [--force]]` | stop; optionally remove worktree (dirty-guarded) |
 | `project add <path> [--name n]\|ls\|rm` | register repos — the UI groups agents by project |
 | `send` / `broadcast` / `inbox` | message agents over the mesh |
@@ -119,7 +128,10 @@ never owns a PTY, and your tmux config is untouched.
 | `init` / `doctor` / `hook` | setup, checks, hook sink (internal) |
 
 Config is env vars: `MUSTER_DEFAULT_CMD` (default spawn command),
-`MUSTER_PPZ`, `MUSTER_STATE_DIR`, `MUSTER_TMUX`, `MUSTER_TMUX_ARGS`.
+`MUSTER_PPZ`, `MUSTER_STATE_DIR`, `MUSTER_TMUX`, `MUSTER_TMUX_ARGS`,
+`MUSTER_STALL_MIN` (silence before ⌛, default 10, 0 off) — plus
+`<state>/config.json` (`skip_permissions`, `repo_roots`, `repo_depth`,
+`stall_after_min`).
 
 ## How it works
 

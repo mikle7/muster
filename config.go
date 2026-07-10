@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 )
 
 // Config is muster's single settings file: <state>/config.json, hand-editable,
@@ -14,6 +16,7 @@ type Config struct {
 	SkipPermissions *bool    `json:"skip_permissions,omitempty"` // default true
 	RepoRoots       []string `json:"repo_roots,omitempty"`       // picker scan roots
 	RepoDepth       int      `json:"repo_depth,omitempty"`       // picker scan depth, default 3
+	StallAfterMin   *int     `json:"stall_after_min,omitempty"`  // "working" with no hook events for this long = stalled (0 disables, default 10)
 }
 
 func configPath() string { return filepath.Join(dataDir(), "config.json") }
@@ -39,6 +42,22 @@ func skipPermissions() bool {
 	return true
 }
 
+// stallAfter: how long "working" may go without a hook event before muster
+// calls it stalled. The community heuristic for "is my agent stuck?" is
+// "is anything still happening?" — hooks give us that signal for free
+// (spinners lie; events don't). 0 disables.
+func stallAfter() time.Duration {
+	if v := os.Getenv("MUSTER_STALL_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return time.Duration(n) * time.Minute
+		}
+	}
+	if c := loadConfig(); c.StallAfterMin != nil {
+		return time.Duration(*c.StallAfterMin) * time.Minute
+	}
+	return 10 * time.Minute
+}
+
 func repoDepth() int {
 	if c := loadConfig(); c.RepoDepth > 0 {
 		return c.RepoDepth
@@ -53,10 +72,12 @@ func writeDefaultConfig() {
 		return
 	}
 	on := true
+	stall := 10
 	c := Config{
 		SkipPermissions: &on,
 		RepoRoots:       []string{"~/Repos", "~/repos", "~/code", "~/src", "~/Projects", "~/dev", "~/work"},
 		RepoDepth:       3,
+		StallAfterMin:   &stall,
 	}
 	b, _ := json.MarshalIndent(c, "", "  ")
 	if os.MkdirAll(dataDir(), 0o755) == nil {

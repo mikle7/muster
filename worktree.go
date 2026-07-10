@@ -99,3 +99,93 @@ func worktreeRemove(repo, dir string) error {
 	}
 	return nil
 }
+
+// ---- worktree environment setup ----------------------------------------------
+// "Worktrees isolate code, not environments" is the #1 recurring complaint
+// about every worktree tool (missing node_modules, .env, ports, DBs).
+// .worktreeinclude copies files; .muster/setup goes further: it runs IN the
+// agent's pane, in the fresh worktree, before the agent starts — deps install
+// visibly, and the agent begins in a working environment. Composed at spawn
+// time only (fresh worktrees), never stored in Argv — resume stays faithful.
+
+// setupScript returns the repo's worktree setup script, "" when none.
+func setupScript(repo string) string {
+	for _, p := range []string{
+		filepath.Join(repo, ".muster", "setup"),
+		filepath.Join(repo, ".muster-setup.sh"),
+	} {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
+// withSetup prefixes the pane command with the setup script run (best-effort:
+// a failed setup still starts the agent — the error stays visible above it).
+func withSetup(cmd, script string) string {
+	if script == "" {
+		return cmd
+	}
+	return "echo " + shQuote("muster: worktree setup — "+collapseHome(script)) +
+		"; sh " + shQuote(script) + " || echo 'muster: setup failed (agent starts anyway)'; " + cmd
+}
+
+// ---- done: merge the branch back & clean up -----------------------------------
+// uzi's `checkpoint` (one-command merge back to main) is the most-praised
+// merge flow in the space, and "worktree not cleaned up after merge" is a
+// top vibe-kanban bug. `muster done` = guarded merge → kill → remove.
+
+// repoHeadBranch names the branch checked out in repo (the merge target).
+func repoHeadBranch(repo string) (string, error) {
+	out, err := git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("rev-parse HEAD: %s", out)
+	}
+	return out, nil
+}
+
+// mergeBranch merges branch into repo's checked-out branch. Guards: the repo
+// working tree must be clean (a merge into a dirty checkout is how you lose
+// work). On conflict the merge is aborted and the error says so — nothing is
+// left half-merged. Returns the merge summary.
+func mergeBranch(repo, branch, agent string, squash bool) (string, error) {
+	if out, err := git(repo, "status", "--porcelain"); err != nil || out != "" {
+		if err != nil {
+			return "", fmt.Errorf("git status: %s", out)
+		}
+		return "", fmt.Errorf("repo %s has uncommitted changes — commit/stash them first (merging into a dirty tree risks your work)", repo)
+	}
+	head, err := repoHeadBranch(repo)
+	if err != nil {
+		return "", err
+	}
+	msg := fmt.Sprintf("muster done: merge %s (agent %s)", branch, agent)
+	if squash {
+		if out, err := git(repo, "merge", "--squash", branch); err != nil {
+			_, _ = git(repo, "merge", "--abort")
+			_, _ = git(repo, "reset", "--merge")
+			return "", fmt.Errorf("squash merge of %s into %s conflicts:\n%s\nresolve by hand in %s, or ask the agent to rebase onto %s first", branch, head, out, repo, head)
+		}
+		if out, err := git(repo, "commit", "-m", msg); err != nil {
+			// squash with nothing to commit (already merged) is fine
+			if strings.Contains(out, "nothing to commit") {
+				return "already merged — nothing to commit", nil
+			}
+			return "", fmt.Errorf("git commit: %s", out)
+		}
+		return "squashed " + branch + " into " + head, nil
+	}
+	out, err := git(repo, "merge", "--no-ff", "-m", msg, branch)
+	if err != nil {
+		_, _ = git(repo, "merge", "--abort")
+		return "", fmt.Errorf("merge of %s into %s conflicts:\n%s\nresolve by hand in %s, or ask the agent to rebase onto %s first", branch, head, out, repo, head)
+	}
+	return "merged " + branch + " into " + head, nil
+}
+
+// branchAhead reports whether branch has commits not on repo HEAD.
+func branchAhead(repo, branch string) bool {
+	out, err := git(repo, "log", branch, "--not", "HEAD", "--oneline", "-1")
+	return err == nil && out != ""
+}

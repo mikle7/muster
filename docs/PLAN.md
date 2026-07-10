@@ -63,6 +63,24 @@
 - [x] attention sort (o), blocked desktop notifications
 (see STATUS.md "Session 3" + DESIGN.md "Session 3")
 
+## Sessions 5–6 (2026-07-10, master) — interactive rooms + shared room pipe
+- [x] room compose line: errors on own status line (frame-corruption fix)
+- [x] rooms on a shared uncollared ppz pipe (one send, everyone sees replies)
+- [x] launch subscribes agents to their project's room; TEAM ROOM etiquette briefing
+- [x] ppz usage audit; TestRoomPipe
+(work done on master by another agent; reviewed + pulled into the branch)
+
+## Session 7 (2026-07-09/10, branch session5-competitive) — the competitive sweep  ✅ vet/test/gofmt + headless E2E
+- [x] researched 14 competitors (~80 sources) → docs/COMPETITORS.md
+- [x] stalled state (⌛): working + no hook events for stall_after_min (config/env)
+- [x] event history (status/<uuid>.events.jsonl) + `muster recap` + `e` popup
+- [x] `muster done` — guarded merge back → kill → remove worktree+branch+spec (`D`)
+- [x] `muster review [--by]` — branch handoff to a reviewer-role agent over the mesh (`w`)
+- [x] worktree setup hook: .muster/setup runs in the pane before the agent (spawn only)
+- [x] fleet triage: header state counts, `/` filter, `u` jump-to-attention, 1–9 jumps
+- [x] known-issue fixes: inbox/recap popups (38-col clip), titled pinned splits (wpin)
+(see STATUS.md "Session 7" + DESIGN.md "Session 7" + docs/COMPETITORS.md)
+
 ## Post-MVP backlog (do not build now)
 - ~~bubbletea dashboard (`muster ui`)~~ → shipped, then reshaped into workspace mode (session 2)
 - tmux status-right segment helper (`muster status --format tmux`)
@@ -70,6 +88,9 @@
 - adopt existing panes (`muster adopt`)
 - non-claude resume flag table (codex --resume?, opencode, etc.)
 - zellij backend behind the tmux interface
-- `muster done` (merge + cleanup one-shot à la workmux)
+- ~~`muster done` (merge + cleanup one-shot à la workmux)~~ → shipped session 7
 - jj (Jujutsu) worktree support (herdr D#480 has 21 votes — real demand)
+- comparative review: N agents' attempts at one task, side-by-side diffs
+  (the strongest unmet wishlist item in the research)
+- stalled-state desktop notification (blocked-only today; wait for dogfood)
 - hosted always-on agents via pipescloud + `ppz command` remote control

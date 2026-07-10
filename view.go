@@ -176,7 +176,11 @@ func cmdRmenu(args []string) int {
 	}
 	self := shQuote(selfExe())
 	run := func(argv string) string { return "run-shell -b " + shQuote(self+" "+argv) }
+	popup := func(argv string) string {
+		return "display-popup -E -w 80% -h 70% " + shQuote("sh -c "+shQuote(self+" "+argv+`; printf '\n[enter to close] '; read -r _`))
+	}
 	menu := []string{"display-menu", "-T", " " + name + " ", "-x", x, "-y", y,
+		"recap", "e", popup("recap " + name),
 		"send message…", "s", "command-prompt -p '→ " + name + ":' " + shQuote(run("send "+name+" \"%%\"")),
 		"open a file…", "v", run("fmenu " + name + " " + pane),
 		"terminal here", "t", "split-window -v -l 12 -t " + pane + " -c " + shQuote(s.Dir),
@@ -187,11 +191,17 @@ func cmdRmenu(args []string) int {
 		"split left", "h", "split-window -h -b -t " + pane + " -c " + shQuote(s.Dir),
 		"zoom", "z", "resize-pane -Z -t " + pane,
 		"", "", "",
-		"inbox", "i", "display-popup -E -w 80% -h 70% " + shQuote("sh -c "+shQuote(self+" inbox "+name+`; printf '\n[enter to close] '; read -r _`)),
+		"inbox", "i", popup("inbox " + name),
 		"schedule…", "c", "command-prompt -p 'cron " + name + ":' " + shQuote(run("cron add "+name+" %%")),
-		"", "", "",
-		"kill (spec kept)", "k", "confirm-before -p 'kill " + name + "? (y/n)' " + shQuote(run("kill "+name)),
+		"", "", ""}
+	menu = append(menu, "review handoff", "w", run("review "+name))
+	if s.Branch != "" {
+		menu = append(menu, "done (merge & clean)", "D",
+			"confirm-before -p 'merge "+s.Branch+" back & retire "+name+"? (y/n)' "+shQuote(run("done "+name)))
 	}
+	menu = append(menu,
+		"kill (spec kept)", "k", "confirm-before -p 'kill "+name+"? (y/n)' "+shQuote(run("kill "+name)),
+	)
 	_, _ = tmuxRun(menu...)
 	return 0
 }
