@@ -560,7 +560,10 @@ func (m *tuiModel) followMeshProxy(name, state string) {
 		for len(m.meshProxies) >= meshProxyCap {
 			m.evictOldestMeshProxy()
 		}
-		_ = ensureMeshProxy(name)
+		if err := ensureMeshProxy(name); err != nil {
+			m.status, m.statErr = "follow "+name+": "+err.Error(), true
+			return
+		}
 	}
 	m.meshProxies[name] = time.Now()
 	m.wp.retarget(name, sess, state)

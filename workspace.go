@@ -262,7 +262,12 @@ func ensureMeshProxy(name string) error {
 	if tmuxHasSession(sess) {
 		return nil
 	}
-	if _, err := tmuxRun("new-session", "-d", "-s", sess, "-e", "PPZ_SESSION=", meshProxyAttachCmd(name)); err != nil {
+	// the self-attach guard's ownSessionHandle() checks PPZ_SESSION, then
+	// falls back to PPZ_CURRENT_HANDLE if that's empty — clearing only the
+	// first would let an ambient PPZ_CURRENT_HANDLE (plausible: muster
+	// itself run from inside an active ppz participant) silently refuse
+	// the proxy's attach for any agent that happens to match it.
+	if _, err := tmuxRun("new-session", "-d", "-s", sess, "-e", "PPZ_SESSION=", "-e", "PPZ_CURRENT_HANDLE=", meshProxyAttachCmd(name)); err != nil {
 		return err
 	}
 	// without this, a crashed attach process closes its pane — the
