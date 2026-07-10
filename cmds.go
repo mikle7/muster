@@ -117,6 +117,42 @@ func cmdSpawn(args []string) int {
 	return launch(spec, false, *noPpz, setup)
 }
 
+// cmdQ is the quick-spawn shorthand: auto-names the agent "chat-<hex4>",
+// runs in the current directory, lands in the workspace bucket (no project).
+// Useful for throwaway chat sessions that don't belong to any project.
+func cmdQ(args []string) int {
+	// derive a short 4-hex-char suffix from a fresh UUID
+	id := newUUID()
+	id = strings.ReplaceAll(id, "-", "")
+	if len(id) >= 4 {
+		id = id[:4]
+	}
+	name := "chat-" + id
+	argv := args
+	if len(argv) == 0 {
+		if def := os.Getenv("MUSTER_DEFAULT_CMD"); def != "" {
+			argv = strings.Fields(def)
+		} else {
+			argv = []string{"claude"}
+		}
+	}
+	dir, _ := os.Getwd()
+	spec := &AgentSpec{
+		Name:        name,
+		Argv:        argv,
+		Env:         map[string]string{},
+		Dir:         dir,
+		TmuxSession: tmuxSession(name),
+		CreatedAt:   time.Now(),
+	}
+	spec.Harness = detectHarness(argv)
+	if spec.Harness == "claude" {
+		spec.SessionUUID = newUUID()
+	}
+	fmt.Printf("spawning %s in %s\n", name, collapseHome(dir))
+	return launch(spec, false, false, "")
+}
+
 // launch starts the tmux session for spec, wrapping in ppz terminal share
 // when the mesh is available. Shared by spawn and resume. setup (fresh
 // worktree spawns only) runs in the pane before everything else — composed
@@ -806,6 +842,23 @@ func cmdDoctor(args []string) int {
 	if tmuxErr != nil || claudeErr != nil {
 		return 1
 	}
+	return 0
+}
+
+// cmdSourceDestroy removes a remote agent's ppz source — used to clear
+// offline mesh rows from the sidebar permanently. Internal: invoked via the
+// K prompt on a dead remote row (the user confirms in the TUI first).
+func cmdSourceDestroy(args []string) int {
+	if len(args) != 1 {
+		return fail(errf("usage: muster source-destroy <handle>"))
+	}
+	if err := requirePpz(); err != nil {
+		return fail(err)
+	}
+	if err := ppzSourceDestroy(args[0]); err != nil {
+		return fail(err)
+	}
+	fmt.Printf("removed %s from the mesh (source destroyed)\n", args[0])
 	return 0
 }
 

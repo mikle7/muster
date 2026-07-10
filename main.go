@@ -16,6 +16,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
 
   spawn <name> [--role txt] [-C dir | --repo dir -b branch] [-e K=V]... [--] [cmd...]
                           start an agent (default cmd: $MUSTER_DEFAULT_CMD or claude)
+  q [cmd...]              quick spawn: auto-named chat-XXXX in cwd, workspace bucket
   ls [--json] [--watch]   every agent: state, unread, age
   attach <name>           go to an agent (switch-client inside tmux)
   menu                    tmux popup picker (bind a key to this)
@@ -26,6 +27,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   done <name> [--squash]  merge the worktree branch back, kill, clean up (guarded)
   review <name> [--by r]  hand the branch to a reviewer agent over the mesh
   project add|ls|rm       register repos/dirs — the UI groups agents by project
+  project conventions <n> [text|--clear]  per-project workflow prompt (injected at spawn)
 
   send <name> <text>      message an agent over ppz (delivered when idle)
   broadcast <text>        message all live agents
@@ -39,7 +41,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   doctor                  environment checks
   hook                    (internal) claude hook sink
 
-state: ⚙ working  ⌛ stalled (working, no events)  ✋ blocked  ✔ idle  ☠ dead
+state: ⚙ working  ⌛ stalled  ✋ blocked (needs input)  → idle+unread  ✔ idle  ☠ dead
 env: MUSTER_DEFAULT_CMD, MUSTER_PPZ, MUSTER_STATE_DIR, MUSTER_STALL_MIN, MUSTER_REFRESH_PCT
 config: <state>/config.json — skip_permissions (default true), repo_roots, repo_depth, stall_after_min, refresh_ctx_pct (auto context refresh at this ctx% when idle; 0 off, default 75)
 worktree env: .worktreeinclude copies files; .muster/setup runs in the pane before the agent
@@ -50,13 +52,14 @@ func main() {
 		os.Exit(cmdTUI(nil))
 	}
 	cmds := map[string]func([]string) int{
-		"ui": cmdTUI, "spawn": cmdSpawn, "ls": cmdLs, "attach": cmdAttach, "menu": cmdMenu,
+		"ui": cmdTUI, "spawn": cmdSpawn, "q": cmdQ, "ls": cmdLs, "attach": cmdAttach, "menu": cmdMenu,
 		"resume": cmdResume, "kill": cmdKill, "refresh": cmdRefresh,
 		"recap": cmdRecap, "done": cmdDone, "review": cmdReview,
 		"send": cmdSend, "broadcast": cmdBroadcast, "inbox": cmdInbox,
 		"cron": cmdCron, "project": cmdProject, "standup": cmdStandup, "room": cmdRoom,
 		"init": cmdInit, "doctor": cmdDoctor, "hook": cmdHook,
 		"rmenu": cmdRmenu, "fmenu": cmdFmenu, "wpin": cmdWpin, // internal: tmux menu callbacks
+		"source-destroy": cmdSourceDestroy, // internal: clear offline mesh agent
 	}
 	if os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h" {
 		fmt.Print(usage)

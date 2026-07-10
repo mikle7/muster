@@ -292,6 +292,49 @@ func ppzScheduleText() string {
 	return strings.TrimSpace(string(out))
 }
 
+type ppzScheduleEntry struct {
+	ID       string `json:"id"`
+	Handle   string `json:"handle"`
+	Pipe     string `json:"pipe"`
+	Schedule string `json:"schedule"` // "every" | "cron" | "at"
+	Spec     string `json:"spec"`     // the interval / cron expr / timestamp
+	NextAt   string `json:"next_at"`
+	LastAt   string `json:"last_at"`
+	Payload  string `json:"payload"`
+	Creator  string `json:"creator"`
+}
+
+// ppzScheduleList returns all live schedules in next-fire order.
+func ppzScheduleList() []ppzScheduleEntry {
+	if !ppzReady() {
+		return nil
+	}
+	out, err := ppzJSON(ctlSession, "schedule", "ls", "--json")
+	if err != nil && len(strings.TrimSpace(string(out))) == 0 {
+		return nil
+	}
+	var entries []ppzScheduleEntry
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		var e ppzScheduleEntry
+		if json.Unmarshal([]byte(line), &e) == nil {
+			entries = append(entries, e)
+		}
+	}
+	return entries
+}
+
+// ppzScheduleRm removes a schedule by ID. Returns nil on success.
+func ppzScheduleRm(id string) error {
+	out, err := ppzOut(ctlSession, "schedule", "rm", id)
+	if err != nil {
+		return errf("ppz schedule rm %s: %s", id, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 type ppzPipeRow struct {
 	Handle string `json:"handle"`
 	Pipe   string `json:"pipe"`
@@ -341,4 +384,24 @@ func ppzUnreadCounts() map[string]int {
 		}
 	}
 	return res
+}
+
+// ppzMarkRead advances mstrctl's read cursor on handle's inbox so the
+// unread badge clears after the user opens an agent. Fire-and-forget;
+// ignore errors (best-effort, mesh may be unavailable).
+func ppzMarkRead(handle string) {
+	if !ppzReady() || handle == "" {
+		return
+	}
+	ppzOut(ctlSession, "read", handle+".inbox", "--json")
+}
+
+// ppzSourceDestroy removes handle and all its pipes from the mesh.
+// Used to clear offline remote agents from the sidebar permanently.
+func ppzSourceDestroy(handle string) error {
+	out, err := ppzOut(ctlSession, "source", "destroy", handle)
+	if err != nil {
+		return errf("ppz source destroy %s: %s", handle, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

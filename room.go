@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -146,10 +146,13 @@ func renderRoom(proj string, w int) string {
 
 // ---- live viewer (runs inside the workspace's right pane) -------------------
 
+// composeH is the number of visible rows reserved for the compose box.
+const composeH = 3
+
 type roomModel struct {
 	proj    string
 	vp      viewport.Model
-	input   textinput.Model
+	input   textarea.Model
 	ready   bool
 	pinned  bool   // stick to the newest message unless the user scrolled up
 	sendErr string // last send failure, cleared on the next keystroke
@@ -192,17 +195,18 @@ func (m roomModel) Init() tea.Cmd { return nil }
 func (m roomModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.vp = viewport.New(msg.Width, msg.Height-2)
+		m.vp = viewport.New(msg.Width, msg.Height-composeH-1) // -1 for status line
 		m.vp.SetContent(renderRoom(m.proj, msg.Width))
 		m.vp.GotoBottom()
-		m.input = textinput.New()
-		m.input.Prompt = "" // sRoomPrompt below renders our own "> "
-		m.input.Placeholder = "message everyone in #" + m.proj + "…"
+		m.input = textarea.New()
+		m.input.Placeholder = "message everyone in #" + m.proj + "…  (enter sends, ctrl-j newline)"
 		m.input.CharLimit = 4000
-		m.input.Width = msg.Width - 4
+		m.input.SetWidth(msg.Width)
+		m.input.SetHeight(composeH)
+		m.input.ShowLineNumbers = false
 		m.input.Focus()
 		m.ready, m.pinned = true, true
-		return m, tea.Batch(roomTick(m.proj, msg.Width), textinput.Blink)
+		return m, tea.Batch(roomTick(m.proj, msg.Width), textarea.Blink)
 	case roomTickMsg:
 		if !m.ready {
 			return m, nil
@@ -233,18 +237,26 @@ func (m roomModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case tea.KeyEsc:
 			if m.input.Value() != "" {
-				m.input.SetValue("")
+				m.input.Reset()
 				return m, nil
 			}
 			return m, tea.Quit
 		case tea.KeyEnter:
+			// Enter sends; ctrl-j inserts a real newline (textarea default
+			// Enter would add a newline, so we intercept it here).
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, nil
 			}
-			m.input.SetValue("")
+			m.input.Reset()
 			m.sendErr = ""
 			return m, sendRoomCmd(m.proj, text)
+		case tea.KeyCtrlJ:
+			// explicit newline in the compose box
+			m.sendErr = ""
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			return m, cmd
 		case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown:
 			var cmd tea.Cmd
 			m.vp, cmd = m.vp.Update(msg)
@@ -277,13 +289,11 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// status is its own line below input (not appended to it) — the input
-// itself is padded to fill the pane width, leaving no safe budget to
-// append anything after it without risking a soft-wrapped line, which
-// desyncs bubbletea's row bookkeeping and corrupts the whole frame.
+// status is its own line above the compose box — kept separate so a long
+// error never triggers soft-wrap that desyncs bubbletea's row bookkeeping.
 func (m roomModel) status() string {
 	if m.sendErr == "" {
-		return sHelp.Render(" enter send · ↑/↓ pgup/pgdn scroll · esc/ctrl-c close")
+		return sHelp.Render(" enter send · ctrl-j newline · ↑/↓ scroll · esc/ctrl-c close")
 	}
 	budget := m.vp.Width - len(" send failed: ")
 	if budget < 10 {
@@ -296,8 +306,7 @@ func (m roomModel) View() string {
 	if !m.ready {
 		return "…"
 	}
-	line := sRoomPrompt.Render("> ") + m.input.View()
-	return m.vp.View() + "\n" + line + "\n" + m.status()
+	return m.vp.View() + "\n" + m.status() + "\n" + m.input.View()
 }
 
 func cmdRoom(args []string) int {

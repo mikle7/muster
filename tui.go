@@ -33,13 +33,50 @@ var (
 	sTitle    = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	sDim      = lipgloss.NewStyle().Foreground(cDim)
 	sProj     = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	sProjSel  = lipgloss.NewStyle().Bold(true).Background(cAccent).Foreground(lipgloss.AdaptiveColor{Light: "255", Dark: "232"})
 	sSelected = lipgloss.NewStyle().Bold(true).Background(cAccent).Foreground(lipgloss.AdaptiveColor{Light: "255", Dark: "232"})
 	sHelp     = lipgloss.NewStyle().Foreground(cDim)
 	sStatus   = lipgloss.NewStyle().Foreground(cIdle)
 	sErr      = lipgloss.NewStyle().Foreground(cBlocked)
 	sButton   = lipgloss.NewStyle().Bold(true).Foreground(cAccent).Background(lipgloss.AdaptiveColor{Light: "254", Dark: "236"})
 	sField    = lipgloss.NewStyle().Foreground(cAccent)
+
+	// projColors: 6 distinct colours cycled by project name hash so every
+	// project gets a stable, visually distinct header colour.
+	projColors = []lipgloss.AdaptiveColor{
+		{Light: "61", Dark: "141"},  // purple (accent)
+		{Light: "64", Dark: "114"},  // green
+		{Light: "136", Dark: "178"}, // gold
+		{Light: "31", Dark: "74"},   // cyan
+		{Light: "125", Dark: "168"}, // magenta
+		{Light: "167", Dark: "209"}, // orange
+	}
 )
+
+// projColor returns a stable colour for proj derived from its name.
+func projColor(proj string) lipgloss.AdaptiveColor {
+	if proj == "" {
+		return cDim
+	}
+	h := 0
+	for _, c := range proj {
+		h = h*31 + int(c)
+	}
+	if h < 0 {
+		h = -h
+	}
+	return projColors[h%len(projColors)]
+}
+
+// markReadCmd returns a background tea.Cmd that advances mstrctl's read
+// cursor on handle's inbox so the unread badge clears after opening an agent.
+func markReadCmd(handle string) tea.Cmd {
+	h := handle
+	return func() tea.Msg {
+		ppzMarkRead(h)
+		return nil
+	}
+}
 
 func stateStyle(state string) lipgloss.Style {
 	switch state {
@@ -391,12 +428,16 @@ type tuiModel struct {
 	// tick when an agent goes offline (reapMeshProxies).
 	meshProxies map[string]time.Time
 
-	mode      string // normal | prompt | form | view
+	mode      string // normal | prompt | form | view | cron
 	prompt    promptSpec
 	input     textinput.Model
 	form      *uiForm
 	viewTitle string
 	viewBody  string
+
+	// cron mode (C key): interactive schedule list with j/k + delete
+	cronEntries []ppzScheduleEntry
+	cronSel     int
 
 	status        string
 	statErr       bool
@@ -764,9 +805,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status, m.statErr = msg.label+": "+firstLine(msg.out+" "+msg.err.Error()), true
 		} else {
 			m.status, m.statErr = msg.label+": "+firstLine(msg.out), false
-			if msg.label == "cron ls" {
-				m.mode, m.viewTitle, m.viewBody = "view", "schedules", msg.out
-			}
 		}
 		m.seq++
 		return m, refreshCmd(m.seq)
@@ -790,6 +828,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = "normal"
 			}
 			return m, nil
+		case "cron":
+			return m.updateCron(msg)
 		case "mesh":
 			return m.updateMesh(msg)
 		}
@@ -822,7 +862,7 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft || m.mode == "view" {
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft || m.mode == "view" || m.mode == "cron" {
 		return m, nil
 	}
 	if m.mode == "pick" {
@@ -878,6 +918,14 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.mode = "form"
 		case "project":
 			m.openPicker()
+		case "term":
+			dir := m.space
+			if r := m.selected(); r != nil && !r.Remote {
+				dir = r.Dir
+			}
+			if dir != "" {
+				m.wp.terminal(dir)
+			}
 		}
 	}
 	return m, nil
@@ -917,7 +965,8 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		menu := []string{"display-menu", "-T", " " + it.row.Name + " ", "-x", mx, "-y", my}
 		switch {
 		case it.row.Remote && it.row.State == "dead":
-			menu = append(menu, "(offline on the mesh — nothing to do here)", "", "")
+			// K triggers the confirm prompt in the TUI's key handler (#4)
+			menu = append(menu, "clear from mesh…", "k", self+"K")
 		case it.row.Remote:
 			// mesh-only: no local tmux/dir/worktree, so only the
 			// mesh-messaging actions apply — everything else is local-only
@@ -957,7 +1006,8 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if it.row.Wt {
 				menu = append(menu, "done (merge & clean)…", "D", self+"D")
 			}
-			menu = append(menu, "kill…", "k", self+"K")
+			menu = append(menu, "kill…", "k", self+"K",
+				"kill+remove…", "x", self+"X")
 		}
 		_, _ = tmuxRun(menu...)
 		return m, cmd
@@ -965,7 +1015,7 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.menuProj, m.menuProjPath = it.projName, it.projPath
 		title := it.projName
 		if title == "" {
-			title = "unassigned"
+			title = "workspace"
 		}
 		menu := []string{"display-menu", "-T", " " + title + " ", "-x", mx, "-y", my,
 			"new agent…", "a", self + "F6",
@@ -1010,6 +1060,43 @@ func (m tuiModel) updateMesh(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "T":
 		return m, runSelf("standup", "standup")
+	}
+	return m, nil
+}
+
+func (m tuiModel) updateCron(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "C":
+		m.mode = "normal"
+		return m, nil
+	case "j", "down":
+		if m.cronSel < len(m.cronEntries)-1 {
+			m.cronSel++
+		}
+	case "k", "up":
+		if m.cronSel > 0 {
+			m.cronSel--
+		}
+	case "d":
+		if len(m.cronEntries) == 0 {
+			return m, nil
+		}
+		e := m.cronEntries[m.cronSel]
+		target := e.Handle + "." + e.Pipe
+		preview := clip(e.Payload, 30)
+		id := e.ID
+		m.openPrompt(promptSpec{
+			label:       "delete schedule " + id,
+			placeholder: "y to remove  " + target + ": " + preview,
+			argv: func(t string) []string {
+				if !strings.HasPrefix(t, "y") {
+					return []string{"ls"}
+				}
+				return []string{"cron", "rm", id}
+			},
+		})
+		m.mode = "prompt" // openPrompt already sets mode, but be explicit
+		return m, nil
 	}
 	return m, nil
 }
@@ -1227,7 +1314,8 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.followMeshProxy(name, sel.State)
 		}
 		m.wp.focus()
-		return m, nil
+		// advance mstrctl's read cursor so the unread badge clears (#8)
+		return m, markReadCmd(name)
 
 	case "s":
 		if name == "" {
@@ -1467,7 +1555,10 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "C":
-		return m, runSelf("cron ls", "cron", "ls")
+		m.cronEntries = ppzScheduleList()
+		m.cronSel = 0
+		m.mode = "cron"
+		return m, nil
 
 	case "M":
 		m.mode = "mesh"
@@ -1483,31 +1574,60 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		popupSelf("inbox " + name)
-		return m, nil
+		// opening inbox means the user is reading it — advance cursor (#8)
+		return m, markReadCmd(name)
 
 	case "K":
 		if name == "" {
 			return m, nil
 		}
 		if sel.Remote {
-			m.status, m.statErr = name+" isn't a local agent — nothing to kill here", true
+			if sel.State != "dead" {
+				m.status, m.statErr = name+" is a remote mesh agent — use X to clear offline ones", true
+				return m, nil
+			}
+			// offline remote: offer to destroy its ppz source (#4)
+			n := name
+			m.openPrompt(promptSpec{
+				label: "clear " + n + " from mesh", placeholder: "y to destroy its ppz source (permanent)",
+				argv: func(t string) []string {
+					if !strings.HasPrefix(t, "y") {
+						return []string{"ls"}
+					}
+					return []string{"source-destroy", n}
+				},
+			})
 			return m, nil
 		}
 		n := name
 		m.openPrompt(promptSpec{
-			label: "kill " + n, placeholder: "y = kill · y --rm = kill+remove worktree/spec",
+			label: "kill " + n, placeholder: "y = kill (spec kept for resume) · see X to also remove",
 			argv: func(t string) []string {
 				args := []string{"kill", n}
-				if strings.Contains(t, "--rm") {
-					args = append(args, "--rm")
-				}
-				if strings.Contains(t, "--force") {
-					args = append(args, "--force")
-				}
 				if !strings.HasPrefix(t, "y") {
 					return []string{"ls"} // anything but y… = no-op
 				}
 				return args
+			},
+		})
+		return m, nil
+
+	case "X": // kill + remove spec in one step (#5)
+		if name == "" {
+			return m, nil
+		}
+		if sel.Remote {
+			m.status, m.statErr = name+" is a remote mesh agent — K to clear it from the mesh", true
+			return m, nil
+		}
+		n := name
+		m.openPrompt(promptSpec{
+			label: "kill+remove " + n, placeholder: "y to kill and wipe spec (use K to keep for resume)",
+			argv: func(t string) []string {
+				if !strings.HasPrefix(t, "y") {
+					return []string{"ls"}
+				}
+				return []string{"kill", n, "--rm"}
 			},
 		})
 		return m, nil
@@ -1553,9 +1673,11 @@ const helpText = `sidebar
  D        done: merge worktree & clean
  T        standup — all agents report
  M        pipes: team, messages, setup
- K        kill (y / y --rm)
+ K        kill (keep spec for resume)
+ X        kill+remove (wipe spec too)
  r / R    resume sel / all
- i        inbox   c/C schedule/list
+ i        inbox   c add schedule
+ C        schedules (j/k nav, d delete)
  o        sort: attention ⇄ projects
  g        refresh   esc leave room
  d        leave (fleet keeps running)
@@ -1628,6 +1750,8 @@ func (m tuiModel) View() string {
 		mid = m.viewPick()
 	case "view", "mesh":
 		mid = m.viewScroll()
+	case "cron":
+		mid = m.viewCron()
 	default:
 		mid = m.viewList() + "\n" + m.viewDetail() + "\n" + m.viewButtons()
 	}
@@ -1781,7 +1905,7 @@ func (m tuiModel) renderItem(i int) string {
 	if it.kind == "proj" {
 		name := it.projName
 		if name == "" {
-			name = "unassigned"
+			name = "workspace"
 		}
 		label := clip(name, w-8)
 		mark := ""
@@ -1795,7 +1919,14 @@ func (m tuiModel) renderItem(i int) string {
 		if pad < 1 {
 			pad = 1
 		}
-		return sProj.Render("▍"+label) + mark + strings.Repeat(" ", pad) + sDim.Render("+")
+		// highlight the active room's project header (#3)
+		if it.projName != "" && it.projName == m.roomView {
+			full := "▍" + label + mark + strings.Repeat(" ", pad) + "+"
+			return sProjSel.Render(fmt.Sprintf("%-*s", w, full))
+		}
+		// per-project colour (#6)
+		pc := lipgloss.NewStyle().Bold(true).Foreground(projColor(it.projName))
+		return pc.Render("▍"+label) + mark + strings.Repeat(" ", pad) + sDim.Render("+")
 	}
 	if it.kind == "sub" { // the agent's checkout, dim, under its row
 		b := "⎇ " + it.row.Branch
@@ -1809,8 +1940,19 @@ func (m tuiModel) renderItem(i int) string {
 		return sDim.Render(body)
 	}
 	r := it.row
+	// idle+unread → show as "has messages" rather than plain idle (#2)
 	glyph := stateGlyph(r.State)
-	name := clip(r.Name, 13)
+	if r.State == "idle" && r.Unread > 0 {
+		glyph = "→"
+	}
+	// agents under a named project get extra indent to read as children (#7)
+	indent := 1
+	nameW := 13
+	if it.projName != "" {
+		indent = 2
+		nameW = 12
+	}
+	name := clip(r.Name, nameW)
 	unread := ""
 	if r.Unread > 0 {
 		unread = fmt.Sprintf("✉%d", r.Unread)
@@ -1824,11 +1966,12 @@ func (m tuiModel) renderItem(i int) string {
 		ext = "·ext"
 	}
 	right := strings.TrimSpace(strings.Join([]string{ext, unread, ctx, r.Age}, " "))
-	body := fmt.Sprintf(" %s %-13s %*s", glyph, name, w-19, right)
+	rightW := w - indent - 1 - 1 - nameW - 1 // indent + glyph + sp + name + sp
+	body := fmt.Sprintf("%*s%s %-*s %*s", indent, "", glyph, nameW, name, rightW, right)
 	if r.Name == m.selName {
 		return sSelected.Render(clip(body, w))
 	}
-	line := " " + stateStyle(r.State).Render(glyph) + " " + fmt.Sprintf("%-13s ", name)
+	line := strings.Repeat(" ", indent) + stateStyle(r.State).Render(glyph) + " " + fmt.Sprintf("%-*s ", nameW, name)
 	rightStyle := sDim
 	switch {
 	case unread != "":
@@ -1838,7 +1981,7 @@ func (m tuiModel) renderItem(i int) string {
 	case r.CtxPct >= 60:
 		rightStyle = lipgloss.NewStyle().Foreground(cWorking)
 	}
-	line += rightStyle.Render(fmt.Sprintf("%*s", w-19, right))
+	line += rightStyle.Render(fmt.Sprintf("%*s", rightW, right))
 	return line
 }
 
@@ -1894,22 +2037,26 @@ func (m tuiModel) viewDetail() string {
 	return sep + "\n" + l1 + "\n" + l2 + "\n" + l3 + "\n" + l4
 }
 
-// button extents are fixed: " [+ agent] [+ project] "
+// button extents are fixed: " [+ agent] [+ project] [term] "
 const btnAgent = "[+ agent]"
 const btnProject = "[+ project]"
+const btnTerm = "[term]"
 
 func (m tuiModel) viewButtons() string {
-	return " " + sButton.Render(btnAgent) + " " + sButton.Render(btnProject)
+	return " " + sButton.Render(btnAgent) + " " + sButton.Render(btnProject) + " " + sButton.Render(btnTerm)
 }
 
 func hitButton(x int) string {
 	a0, a1 := 1, 1+len(btnAgent)
 	p0, p1 := a1+1, a1+1+len(btnProject)
+	t0, t1 := p1+1, p1+1+len(btnTerm)
 	switch {
 	case x >= a0 && x < a1:
 		return "agent"
 	case x >= p0 && x < p1:
 		return "project"
+	case x >= t0 && x < t1:
+		return "term"
 	}
 	return ""
 }
@@ -2001,6 +2148,58 @@ func (m tuiModel) formFieldAt(y int) int {
 	return -1
 }
 
+// cronNextRel formats a ppz next_at timestamp as a human relative string.
+func cronNextRel(nextAt string) string {
+	if nextAt == "" {
+		return "—"
+	}
+	t, err := time.Parse(time.RFC3339, nextAt)
+	if err != nil {
+		return nextAt[:min(len(nextAt), 16)]
+	}
+	d := time.Until(t)
+	if d < 0 {
+		return "past"
+	}
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("in %dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("in %dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("in %dd", int(d.Hours()/24))
+	}
+}
+
+func (m tuiModel) viewCron() string {
+	h := m.listH() + detailH + 1
+	lines := []string{sTitle.Render(" schedules")}
+	if len(m.cronEntries) == 0 {
+		lines = append(lines, "", sDim.Render("  no schedules — use c to add one"))
+	} else {
+		for i, e := range m.cronEntries {
+			target := clip(e.Handle+"."+e.Pipe, 14)
+			next := cronNextRel(e.NextAt)
+			row := fmt.Sprintf(" %-14s %-7s  %s", target, next, clip(e.Payload, sidebarW-26))
+			if i == m.cronSel {
+				lines = append(lines, sSelected.Render(fmt.Sprintf("%-*s", sidebarW-1, ">"+row)))
+			} else {
+				lines = append(lines, " "+row)
+			}
+		}
+		if m.cronSel < len(m.cronEntries) {
+			e := m.cronEntries[m.cronSel]
+			lines = append(lines, "", sDim.Render(" id: "+e.ID+"  "+e.Schedule+" "+e.Spec))
+			lines = append(lines, sDim.Render(" "+clip(e.Payload, sidebarW-2)))
+		}
+	}
+	lines = append(lines, "", sHelp.Render(" j/k nav · d delete · esc back"))
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines[:h], "\n")
+}
+
 func (m tuiModel) viewScroll() string {
 	h := m.listH() + detailH + 1 // replaces list+detail+buttons
 	lines := []string{sTitle.Render(" " + m.viewTitle)}
@@ -2029,7 +2228,7 @@ func (m tuiModel) viewBottom() string {
 	if m.statErr {
 		style = sErr
 	}
-	help := sHelp.Render(" a spawn · P project · enter type · ? keys")
+	help := sHelp.Render(" a spawn · t term · enter type · ? keys")
 	return style.Render(" "+clip(st, sidebarW-1)) + "\n" + help
 }
 

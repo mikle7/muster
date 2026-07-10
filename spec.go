@@ -195,7 +195,8 @@ func meshBriefing(s *AgentSpec) string {
 		"task, state, key decisions, file paths, exact next steps. Update it after every significant step, " +
 		"not just when asked: when your context is cleared (muster does this at high context usage), that " +
 		"file is automatically re-injected and is ALL your future self gets. Write it to resume cold."
-	if proj := projectFor(loadProjects(), lsRow{Dir: s.Dir, Repo: s.Repo}); proj != "" {
+	ps := loadProjects()
+	if proj := projectFor(ps, lsRow{Dir: s.Dir, Repo: s.Repo}); proj != "" {
 		pipe := roomPipe(proj)
 		b += " TEAM ROOM: '" + pipe + "' is a shared pipe the whole #" + proj + " team (and the user) reads — " +
 			"you are subscribed, its messages arrive via 'ppz subs read'. Reply to room messages IN the room " +
@@ -206,6 +207,12 @@ func meshBriefing(s *AgentSpec) string {
 			"room and check it wasn't already claimed — if a teammate claimed it, wait for their summary and " +
 			"build on that instead of redoing the fetch; (3) keep room messages short and conversational — " +
 			"discuss and divide, don't broadcast identical reports."
+		for _, p := range ps {
+			if p.Name == proj && p.ConventionsPrompt != "" {
+				b += " WORKFLOW CONVENTIONS: " + p.ConventionsPrompt
+				break
+			}
+		}
 	}
 	return b
 }
