@@ -57,6 +57,28 @@ the user asked to review on a worktree):
   display-popups (kills the 38-col clip known-issue); pinned splits now
   titled with the agent name (`muster wpin`, self-exec'd from menus).
 
+### Session 7 candidate-next-steps pass (2026-07-10)
+
+The user asked for all of session 4's "candidate next steps". Steps 2–3
+(done/review, filter/jump keys) shipped above. The rest:
+
+- **Step 1 (dogfood), headless half DONE**: 3-agent fleet with roles
+  across 2 projects, faked claude statuses — header `✋1 ⌛1 ⚙1`, `o`
+  sort (blocked→stalled→working), `u` jump to dave with promoted
+  permission_prompt reason, `3` jump to stalled peter, `/game` filter to
+  dave by role, `D` on a non-worktree agent shows the friendly guard,
+  TUI survives `e`/popup keys with no client attached. The live-mesh
+  half (rooms etiquette, Peter-reviews-a-PR, real standup) CANNOT run
+  here — no ppz binary/mesh in the sandbox → **docs/FOLLOWUP.md**.
+- **Step 4 (menu tuning), code half DONE**: sidebar right-click menus now
+  compute client coords from `#{pane_left}/#{pane_top}` (verified =0/1 in
+  the workspace layout, matching the old +2 guess) instead of hardcoding;
+  robust under zoom/splits. The by-feel placement check needs a real
+  client → FOLLOWUP.md. Pinned-pane titles were fixed above (wpin).
+- **Step 5 (pipescloud.io)**: purely operational (interactive browser
+  device flow on the user's machine) — nothing to code; steps written in
+  FOLLOWUP.md §3.
+
 ### Session 7 E2E evidence (headless, Linux sandbox, scratch server)
 
 Spawned a worktree agent from a repo with `.muster/setup` → marker file
@@ -316,10 +338,17 @@ selected agent's REAL terminal (nested tmux client) — see DESIGN.md.
 
 ## Candidate next steps (in value order)
 
-1. Human dogfood: fleet with roles, real standup, room chat during a
-   multi-agent task, review handoff (the Peter-reviews-a-PR loop).
-2. `muster done <name>` (merge → kill → rm worktree) + a "review this
-   branch" one-key handoff to a reviewer-role agent.
-3. Keymap future keys: `/` filter, `u` jump-to-blocked, number jumps.
-4. Menu position tuning + pinned-pane titles after dogfood.
-5. Point the mesh at hosted pipescloud.io for always-on schedules.
+All five session-4 candidates are now either shipped or blocked on the
+user's machine — the machine-bound remainder lives in **docs/FOLLOWUP.md**
+(live-mesh E2E, real-mouse menu feel, pipescloud.io login, rebuild).
+
+1. ~~Human dogfood~~ headless half done (session 7); live-mesh half →
+   FOLLOWUP §1, real-mouse half → FOLLOWUP §2.
+2. ~~`muster done` + review handoff~~ shipped session 7.
+3. ~~Keymap future keys (`/`, `u`, 1–9)~~ shipped session 7.
+4. ~~Menu position + pinned-pane titles~~ code half shipped session 7
+   (pane_left/pane_top coords, wpin titles); feel check → FOLLOWUP §2.
+5. ~~pipescloud.io~~ operational only → FOLLOWUP §3.
+
+Fresh candidates after that: unread-badge cursor fix (FOLLOWUP §5),
+comparative review of N attempts (PLAN backlog), stalled notifications.

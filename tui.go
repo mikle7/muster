@@ -679,8 +679,19 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if idx < 0 || idx >= len(m.items) {
 		return m, nil
 	}
-	// menu coordinates: window-absolute; +1 for the pane-border title row
-	mx, my := strconv.Itoa(msg.X), strconv.Itoa(msg.Y+2)
+	// menu coordinates: display-menu wants client-absolute, msg.X/Y are
+	// pane-relative. Ask tmux where this pane actually sits (was a
+	// hardcoded "+2 for the border row" guess — session-4 known issue);
+	// numeric -y anchors the menu's BOTTOM edge, so +1 puts it under the
+	// pointer. Center as the fallback if the query fails.
+	mx, my := "C", "C"
+	if out, err := tmuxRun("display-message", "-p", "-t", m.wp.left, "#{pane_left}\t#{pane_top}"); err == nil {
+		if l, t, ok := strings.Cut(out, "\t"); ok {
+			left, _ := strconv.Atoi(l)
+			top, _ := strconv.Atoi(t)
+			mx, my = strconv.Itoa(left+msg.X), strconv.Itoa(top+msg.Y+1)
+		}
+	}
 	self := "send-keys -t " + m.wp.left + " "
 	switch it := m.items[idx]; it.kind {
 	case "agent":
