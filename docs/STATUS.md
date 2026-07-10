@@ -3,10 +3,99 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-10 (session 9 — remote ppz-mesh agents now show in
-the main sidebar, not just the M mesh view. vet/test/gofmt green; live
-cross-machine E2E on the user's real 3-machine mesh PASSED. Branch
-`feat/mesh-sidebar`, uncommitted here — pushed for review.)
+**Last updated:** 2026-07-10 (session 10 — remote sidebar rows embed a real
+`ppz terminal attach` in the right pane instead of a read-only watch popup.
+vet/test/gofmt green; live E2E against a real ppz-wrapped throwaway target
+PASSED, including a real Ctrl-\ detach/re-attach cycle. Branch
+`feat/remote-attach`, uncommitted here — pushed for review.)
+
+## Session 10: real attach instead of watch-only, for remote rows
+
+Follow-up to session 9 (mesh sidebar) + session 9.5 (project bucketing,
+merged): chud shipped `ppz terminal attach` — real bidirectional keystroke
+forwarding, resize, Ctrl-C passthrough to the remote process, Ctrl-\
+detaches. Greg's ask: wire it into muster instead of the popup-based
+`watch` from session 9.
+
+Design (a mid-build revision from chud's own review — greg's literal spec
+was "select embeds, same as local rows"; chud flagged that local's
+select-embeds is cheap (switch-client onto an already-running session) but
+remote has no such cheap path — `ppz terminal attach` is a fresh process
+every time, so embedding on mere `j`/`k` scroll would spawn/kill one per
+row scrolled past):
+
+- **Select shows a placeholder**, same as before (now describing attach
+  instead of watch). **enter/l/tab spawns the actual attach**
+  (`workspacePanes.attachRemote`), respawn-pane into the right pane, same
+  mechanism as local rows' nested-attach embed — just deferred to explicit
+  intent instead of firing on selection.
+- **Two bugs found live-testing, both fixed**:
+  1. The generic target-selection logic in `retarget()` always derives
+     `"remote:"+name` for any live remote row regardless of attach state
+     (tmuxSess is always empty for remote rows) — so once attached
+     (`lastTarget = "attach:"+name`), the NEXT 2s tick would recompute
+     `target = "remote:"+name`, see it mismatch `lastTarget`, and silently
+     stomp the live attach back to the placeholder. Every single tick.
+     Fixed: a liveness check at the top of `retarget()` now short-circuits
+     and returns immediately when still-attached-and-healthy, before the
+     generic logic ever runs.
+  2. That same liveness check first tried `pane_current_command !=
+     "ppz"` to detect a dead attach (Ctrl-\ detach, crash) — wrong signal:
+     `pane_current_command` freezes at its last value once a process exits
+     (remain-on-exit keeps the pane around, tmux never updates "current"
+     command to reflect nothing running), so it kept reading "ppz" long
+     after a real detach. Fixed: use `#{pane_dead}` instead, tmux's actual
+     purpose-built liveness flag.
+- **Discoverability** (the ask was specifically about "stuck, had to
+  restart muster" confusion): pane title shows `name (mesh · Ctrl-\
+  detach)` while attached — persistently visible via
+  `pane-border-status top`, exactly where the user's eyes are when
+  they're stuck, not a one-off message they could've missed. Also: a
+  one-time sidebar status line on attach, the detail-panel hint line, the
+  `?` help screen, and the right-click menu label all updated to match.
+- **Self-attach footgun**: found by accident during live testing — mis-
+  navigated and ran `ppz terminal attach` against my OWN live session
+  (wren), which created a real bidirectional feedback loop (garbled
+  render; contributed to needing a kill+resume to recover). Muster's
+  detach-recovery caught it correctly once the process exited on its own,
+  but the real fix belongs in `attach` itself — flagged to chud, who
+  shipped a guard same-day (refuses pre-dial if the target handle equals
+  the caller's own `PPZ_SESSION`).
+
+No new unit tests: `workspace.go` has none anywhere in the codebase — it's
+tmux-subprocess-heavy and covered by live/headless E2E only, matching the
+existing pattern.
+
+### Session 10 E2E evidence
+
+Real ppz binary (not faked), real mesh. Safety note: after the near-miss
+above, all interactive keystroke tests below ran ONLY against disposable
+`ppz terminal share <throwaway> -- sh` targets I created and destroyed
+myself (`PPZ_AGENT_HARNESS=claude` env-forced so they'd surface as sidebar
+rows) — never against a real teammate's session, and selection was always
+confirmed via the sidebar's `/` filter (not counted `j` presses) before
+any keystroke went out.
+
+Headless scratch tmux + real ppz: selecting a remote row showed the
+select-only placeholder (no process spawned); enter embedded a real
+`ppz terminal attach` (confirmed via `pane_current_command`); typing into
+muster's right pane landed on the actual target's own pane (verified by
+capturing both sides — byte-identical); survived 8+ seconds / 4 tick
+cycles without the target-selection bug re-triggering (post-fix); a real
+Ctrl-\ detached the process, and after the fix above the next tick
+correctly swapped to "detached — enter or l re-attaches" instead of
+tmux's native "Pane is dead" freeze; re-attaching afterward worked;
+switching to a different remote row while attached cleanly killed the old
+attach process (`respawn-pane -k`) before showing the new row. Separately
+confirmed a local spawned agent's live-attach path (untouched by this
+diff) is unaffected: immediate embed on select, unchanged across 5s of
+tick cycles, no respawn flicker. go vet/build/test/gofmt clean throughout.
+
+One live incident during testing, not caused by this work: chud/greg
+redeployed the ppz daemon mid-session (shipping the self-attach guard
+above), which transiently emptied `ppz who` for a few seconds — recognized
+via the daemon's version string / token-refresh age jumping, not a code
+bug; waited it out and recreated throwaway targets on the far side.
 
 ## Session 9: mesh agents in the main sidebar
 

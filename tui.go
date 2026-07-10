@@ -759,7 +759,7 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			// mesh-messaging actions apply — everything else is local-only
 			// (see updateNormal's sel.Remote guards).
 			menu = append(menu,
-				"watch live", "t", self+"Enter",
+				"attach (type into agent)", "t", self+"Enter",
 				"send message…", "s", self+"s",
 				"inbox", "i", self+"i",
 				"schedule…", "c", self+"c")
@@ -1050,16 +1050,19 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if sel == nil {
 			return m, nil
 		}
-		if sel.Remote {
-			if sel.State == "dead" {
+		if sel.State == "dead" {
+			if sel.Remote {
 				m.status, m.statErr = name+" looks offline on the mesh — nothing to resume from here", true
 				return m, nil
 			}
-			popupCmd(shQuote(ppzBin()) + " terminal watch " + shQuote(name))
-			return m, nil
-		}
-		if sel.State == "dead" {
 			return m, runSelf("resume", "resume", name)
+		}
+		if sel.Remote {
+			// unlike local rows (retarget() already switched the pane on
+			// mere selection — cheap), a remote row only gets the actual
+			// `ppz terminal attach` spawned here, on explicit intent.
+			m.wp.attachRemote(name)
+			m.status, m.statErr = "attached to "+name+" (mesh) — Ctrl-\\ detaches, Ctrl-C passes through", false
 		}
 		m.wp.focus()
 		return m, nil
@@ -1398,8 +1401,10 @@ const helpText = `sidebar
  q        quit workspace
 
  ·ext = mesh-only agent (another
- machine): enter/l watches it live,
- s/i/c still work — rest is local-only
+ machine): enter/l attaches live
+ (Ctrl-\ detaches, Ctrl-C passes
+ through) · s/i/c still work — rest
+ is local-only
 
 agent pane (right)
  click it or press enter, then type
@@ -1712,7 +1717,7 @@ func (m tuiModel) viewDetail() string {
 			host = "mesh"
 		}
 		l3 = " " + sDim.Render(clip("·ext — on "+host+", no local session", w-1))
-		l4 = " " + sDim.Render("enter/l watch live · s send · i inbox · c schedule")
+		l4 = " " + sDim.Render("enter/l attach (Ctrl-\\ detach) · s send")
 	} else {
 		dir := collapseHome(r.Dir)
 		if r.Branch != "" {

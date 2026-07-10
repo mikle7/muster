@@ -159,21 +159,49 @@ func (wp *workspacePanes) ensure(tuiWidth int) {
 	}
 }
 
-// retarget points the right pane at the selected agent: live agents get the
-// nested attach client switched (or respawned), dead ones a resume hint,
-// mesh-only ones (no local tmux session at all) a placeholder — attaching an
-// empty session name is a broken tmux command, not a graceful no-op.
+// retarget points the right pane at the selected agent: live local agents
+// get the nested attach client switched (or respawned) — cheap, so it fires
+// on mere selection. Live remote ones (no local tmux session) get a
+// placeholder instead: unlike local's switch-client, `ppz terminal attach`
+// has to spawn a fresh process with no cheap "just switch" path, so
+// scrolling past several remote rows would otherwise spawn/kill one per
+// row. attachRemote (called from enter/l/tab) does the actual embed. Dead
+// rows (local or remote) get a resume/offline hint.
 func (wp *workspacePanes) retarget(name, tmuxSess, state string) {
 	if wp.right == "" {
 		return
 	}
+	// Currently attached to the still-selected remote row: checked every
+	// tick (not just on selection change), since detaching happens from
+	// inside the pane, invisibly to muster. Two outcomes: still healthy —
+	// leave it alone and return now, BEFORE the generic target logic below
+	// (which always derives "remote:"+name for any live remote row, attach
+	// or not, and would otherwise stomp a healthy attach back to the
+	// placeholder on every single tick). Or the process is gone (Ctrl-\
+	// detach, crash, dropped connection) — fall to the placeholder instead
+	// of a frozen dead pane, and let the generic logic below re-derive
+	// "remote:"+name normally.
+	if wp.lastTarget == "attach:"+name && name != "" {
+		// pane_current_command freezes at its last value once the process
+		// exits (remain-on-exit keeps the pane around but tmux never
+		// updates the "current" command to reflect nothing running) — it
+		// still reads "ppz" long after Ctrl-\ detached. pane_dead is the
+		// actual liveness signal.
+		dead, _ := tmuxRun("display-message", "-p", "-t", wp.right, "#{pane_dead}")
+		if dead == "1" {
+			wp.showRemotePlaceholder(name, "detached from "+name+".\n\nenter or l re-attaches.")
+			wp.lastTarget = "remote:" + name
+		} else {
+			return
+		}
+	}
 	target := "none"
 	switch {
 	case name == "":
-	case tmuxSess == "":
-		target = "remote:" + name
 	case state == "dead":
 		target = "dead:" + name
+	case tmuxSess == "":
+		target = "remote:" + name
 	default:
 		target = "live:" + tmuxSess
 	}
@@ -185,11 +213,12 @@ func (wp *workspacePanes) retarget(name, tmuxSess, state string) {
 		_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, placeholderCmd(welcomeText))
 		_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", "agent")
 	case strings.HasPrefix(target, "remote:"):
-		msg := "agent '" + name + "' lives on the ppz mesh only\n(no local session on this machine).\n\nenter or l opens a live watch popup;\ns still sends it a message."
-		_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, placeholderCmd(msg))
-		_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", name+" (mesh)")
+		wp.showRemotePlaceholder(name, "agent '"+name+"' lives on the ppz mesh only.\n\nenter or l attaches live — bidirectional keystrokes,\nCtrl-C passes through to the remote process,\nCtrl-\\ detaches.")
 	case state == "dead":
 		msg := "agent '" + name + "' is dead.\n\nenter or r in the sidebar resumes it with its EXACT original command\n(conversation and permissions included)."
+		if tmuxSess == "" { // remote row: no local spec, resume doesn't apply
+			msg = "agent '" + name + "' looks offline on the mesh.\n\nnothing to resume from here — it isn't a local agent."
+		}
 		_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, placeholderCmd(msg))
 		_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", name+" (dead)")
 	default:
@@ -211,6 +240,28 @@ func (wp *workspacePanes) retarget(name, tmuxSess, state string) {
 		_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", name)
 	}
 	wp.lastTarget = target
+}
+
+// showRemotePlaceholder renders msg in the right pane for a mesh-only
+// agent. Callers manage lastTarget themselves: retarget's normal flow and
+// the mid-attach liveness recovery need different target strings for the
+// same rendered placeholder.
+func (wp *workspacePanes) showRemotePlaceholder(name, msg string) {
+	_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, placeholderCmd(msg))
+	_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", name+" (mesh)")
+}
+
+// attachRemote embeds `ppz terminal attach` for a mesh-only agent —
+// deliberately NOT called from retarget (mere selection): unlike local
+// rows' cheap switch-client, this spawns a fresh process every time, so it
+// only fires on explicit intent (enter/l/tab).
+func (wp *workspacePanes) attachRemote(name string) {
+	if wp.right == "" {
+		return
+	}
+	_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, remoteAttachCmd(name))
+	_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", name+" (mesh · Ctrl-\\ detach)")
+	wp.lastTarget = "attach:" + name
 }
 
 // focus moves the user's cursor into the agent pane — from there they type
@@ -300,6 +351,14 @@ func attachCmd(sess string) string {
 		cmd += " " + extra
 	}
 	return cmd + " attach -t " + shQuote("="+sess)
+}
+
+// remoteAttachCmd is the right pane's command for a mesh-only agent: no
+// local tmux session to nest into, so `ppz terminal attach` drives it
+// directly — bidirectional keystrokes/resize over the mesh, Ctrl-C passes
+// through as a real interrupt to the remote process, Ctrl-\ detaches.
+func remoteAttachCmd(handle string) string {
+	return "exec " + shQuote(ppzBin()) + " terminal attach " + shQuote(handle)
 }
 
 func placeholderCmd(msg string) string {
