@@ -12,13 +12,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// A room IS a project/space: its chat is the sum of its members' inboxes —
-// every mesh message to any agent in the space (and to you from them),
-// rendered as one conversation. Clicking a project in the sidebar shows it
-// in the right pane (`muster room <project> --watch`). Read receipts (✓✓)
-// come from ppz ack:read envelopes. A compose line at the bottom sends
-// whatever you type to every member's ppz handle at once — a real group
-// chat, not just a transcript + the T-key standup broadcast.
+// A room IS a project/space: a shared uncollared ppz pipe (room-<proj>)
+// that every member subscribes to at launch — one send, everyone sees it
+// AND each other's replies, sender-attributed, each on their own cursor.
+// The view unions that channel with the members' inbox DM traffic (agent↔
+// agent chatter, standup replies to mstrctl) so 1:1 messages still show.
+// Clicking a project in the sidebar shows it in the right pane
+// (`muster room <project> --watch`). Read receipts (✓✓) come from ppz
+// ack:read envelopes (inbox DMs only — shared-pipe ack semantics are
+// per-reader and unverified, so room messages carry no tick).
 
 type roomMsg struct {
 	t        time.Time
@@ -70,6 +72,14 @@ func gatherRoom(proj string) (msgs []roomMsg, members []string) {
 		scan(h, false)
 	}
 	scan(ctlHandle, true)
+	// the shared room channel itself — everyone's room sends, one copy each
+	for _, e := range ppzReread(roomPipe(proj), "24h") {
+		if e.Sender == "" {
+			continue
+		}
+		t, _ := time.Parse(time.RFC3339, e.CreatedAt)
+		msgs = append(msgs, roomMsg{t: t, from: e.Sender, to: "#" + proj, text: e.Payload, id: e.ID})
+	}
 	for i := range msgs {
 		msgs[i].read = read[msgs[i].id]
 	}
@@ -154,31 +164,24 @@ func roomTick(proj string, w int) tea.Cmd {
 	})
 }
 
-// refreshRoomCmd re-renders immediately (off the update loop, like roomTick)
-// so a message you send shows up without waiting for the next 2s tick.
+// roomRefreshedMsg is a one-shot re-render (a sent message shouldn't wait for
+// the next 2s tick) — distinct from roomTickMsg so handling it doesn't also
+// arm a second, redundant tick loop alongside the one already running.
+type roomRefreshedMsg struct{ body string }
+
 func refreshRoomCmd(proj string, w int) tea.Cmd {
-	return func() tea.Msg { return roomTickMsg{body: renderRoom(proj, w)} }
+	return func() tea.Msg { return roomRefreshedMsg{body: renderRoom(proj, w)} }
 }
 
-// sendRoomCmd fans text out to every room member's ppz handle — a group
-// chat, built entirely from ppz's per-handle send (ppz has no broadcast
-// pipe of its own, see docs/WIRE.md).
+// sendRoomCmd publishes text ONCE to the project's shared room pipe —
+// every subscribed member sees it (and each other's replies) there.
+// Members subscribe at launch, so agents spawned before this feature
+// need a relaunch to hear the room.
 func sendRoomCmd(proj, text string) tea.Cmd {
 	return func() tea.Msg {
-		n := 0
-		var err error
-		for _, s := range roomAgents(proj) {
-			if s.PpzHandle == "" {
-				continue
-			}
-			if e := ppzSend(s.PpzHandle, text); e != nil {
-				err = e
-				continue
-			}
-			n++
-		}
-		if n == 0 && err == nil {
-			err = errf("no agents on the mesh in this room")
+		pipe, err := ensureRoomPipe(proj)
+		if err == nil {
+			err = ppzSend(pipe, text)
 		}
 		return roomSentMsg{err: err}
 	}
@@ -209,9 +212,18 @@ func (m roomModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.GotoBottom()
 		}
 		return m, roomTick(m.proj, m.vp.Width)
+	case roomRefreshedMsg:
+		if !m.ready {
+			return m, nil
+		}
+		m.vp.SetContent(msg.body)
+		if m.pinned {
+			m.vp.GotoBottom()
+		}
+		return m, nil
 	case roomSentMsg:
 		if msg.err != nil {
-			m.sendErr = msg.err.Error()
+			m.sendErr = strings.TrimSpace(msg.err.Error())
 			return m, nil
 		}
 		return m, refreshRoomCmd(m.proj, m.vp.Width)
@@ -251,16 +263,41 @@ func (m roomModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// truncateRunes bounds s to n runes so a long error can never make the
+// compose line wider than the pane — a soft-wrapped line desyncs
+// bubbletea's row bookkeeping and corrupts the whole alt-screen frame.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		return string(r[:n])
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// status is its own line below input (not appended to it) — the input
+// itself is padded to fill the pane width, leaving no safe budget to
+// append anything after it without risking a soft-wrapped line, which
+// desyncs bubbletea's row bookkeeping and corrupts the whole frame.
+func (m roomModel) status() string {
+	if m.sendErr == "" {
+		return sHelp.Render(" enter send · ↑/↓ pgup/pgdn scroll · esc/ctrl-c close")
+	}
+	budget := m.vp.Width - len(" send failed: ")
+	if budget < 10 {
+		budget = 10
+	}
+	return " " + sRoomErr.Render("send failed: "+truncateRunes(m.sendErr, budget))
+}
+
 func (m roomModel) View() string {
 	if !m.ready {
 		return "…"
 	}
 	line := sRoomPrompt.Render("> ") + m.input.View()
-	if m.sendErr != "" {
-		line += "  " + sRoomErr.Render("send failed: "+m.sendErr)
-	}
-	help := " enter send · ↑/↓ pgup/pgdn scroll · esc/ctrl-c close"
-	return m.vp.View() + "\n" + line + "\n" + sHelp.Render(help)
+	return m.vp.View() + "\n" + line + "\n" + m.status()
 }
 
 func cmdRoom(args []string) int {

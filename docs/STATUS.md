@@ -3,13 +3,14 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-09 (session 5 — competitive research sweep +
+**Last updated:** 2026-07-10 (session 7 — competitive research sweep +
 stalled state, recap, done/review workflow, worktree setup hook, fleet
-triage keys. ON BRANCH session5-competitive, worktree .wt/session5 —
-awaiting user review before merge. vet/test/gofmt green; headless E2E of
-stall/recap/setup/done/filter PASSED on a Linux sandbox.)
+triage keys; sessions 5–6 master WIP (rooms on a shared pipe, ppz audit)
+reviewed and pulled into this branch. ON BRANCH session5-competitive,
+worktree .wt/session5 — awaiting user review before merge. vet/test/gofmt
+green; headless E2E PASSED on a Linux sandbox.)
 
-## Session 5: what the rest of the market taught us (BRANCH, unmerged)
+## Session 7: what the rest of the market taught us (BRANCH, unmerged)
 
 Research first: 4 parallel sweeps over ~80 primary sources across 14
 competitors (herdr, claude-squad, uzi, Tmux-Orchestrator, agent-farm,
@@ -19,6 +20,9 @@ URLs: **docs/COMPETITORS.md**. Headlines: scraping-based status is every
 tmux tool's top bug source (we're immune, keep it that way); "which agent
 needs me" triage is the product; worktrees isolate code not environments;
 review/merge is the real bottleneck; wrappers that hide the harness die.
+
+(Section written as "session 5" before master's agent claimed 5–6;
+renumbered to 7. The branch name stays session5-competitive.)
 
 Shipped on the branch (all guarded by tests; NOT yet merged to master —
 the user asked to review on a worktree):
@@ -53,7 +57,7 @@ the user asked to review on a worktree):
   display-popups (kills the 38-col clip known-issue); pinned splits now
   titled with the agent name (`muster wpin`, self-exec'd from menus).
 
-### Session 5 E2E evidence (headless, Linux sandbox, scratch server)
+### Session 7 E2E evidence (headless, Linux sandbox, scratch server)
 
 Spawned a worktree agent from a repo with `.muster/setup` → marker file
 present in the worktree before the agent ran; `done` refused while
@@ -72,11 +76,57 @@ weren't exercised; cmdDone reuses tmuxKillSession (session-1 tested).
 1. `git -C .wt/session5 diff master --stat` then the diff itself.
 2. Real-mouse dogfood of: `e` recap popup, `/` filter, `u`, right-click
    "done (merge & clean)" y/n flow, wpin-titled splits.
-3. If good: `git merge session5-competitive`, rebuild, reinstall
+3. If good: commit (or discard) master's working tree first, then
+   `git merge session5-competitive`, rebuild, reinstall
    (`rm ~/.local/bin/muster` first — macOS signature cache).
-4. Uncommitted `room.go` debug edits on master (roomRefreshedMsg +
-   /tmp/room-debug.log writes) predate this session — left untouched;
-   the roomRefreshedMsg split looks worth keeping, the debug writes not.
+4. Master's uncommitted sessions 5–6 work (rooms shared pipe, briefing
+   etiquette, room-view fixes, ppz_test.go) was reviewed and APPLIED to
+   this branch — merging is safe even if that agent commits the same
+   diff (identical content resolves clean); divergent later edits on
+   master win on their side of any conflict, ours here.
+
+## Session 6: rooms become a real shared channel (uncollared ppz pipe)
+
+[pulled into session5-competitive from master WIP, 2026-07-10]
+
+User demoed the token-doubling bug: "message everyone" fanned out N unicast
+sends (`sendRoomCmd` loop), so each agent got what looked like a private DM,
+couldn't see peers' replies, and independently fetched the same GitHub issue
+list. Deep dive into ppz (WIRE.md, CHANGELOG, e2e tests, read.go) found the
+proper primitive: **uncollared pipes** (v0.31+) are symmetric many-to-many
+channels — per-session cursors, sender-attributed render, `ppz send LEAF`
+resolves the uncollared pipe first. Changes (live-verified on the real
+local mesh by the master-side agent):
+
+- **`roomPipe(proj)`** (ppz.go): `room-<proj>` squeezed into ppz's segment
+  regex (32-char cap) + `TestRoomPipe`. `ensureRoomPipe` idempotent;
+  `subscribeRoom(session, pipe)` = `ppz subs add` under the agent session.
+- **`sendRoomCmd`** (room.go): ONE send to the room pipe (was N unicasts).
+- **`gatherRoom`** unions room-pipe history with member-inbox DMs; room
+  messages render `sender → #proj`, no ✓✓ (shared-pipe ack semantics
+  unverified).
+- **`launch()`**: creates + subscribes the room pipe before the harness
+  starts. Agents spawned before this build need kill+resume to join.
+- **`meshBriefing`**: TEAM ROOM etiquette — reply in-room, addressed agent
+  acts alone, `CLAIMING: <task>` before whole-room work.
+
+## Session 5: room chat interactive + ppz-usage audit (master WIP)
+
+[pulled into session5-competitive from master WIP, 2026-07-10]
+
+- Skip-permissions "not working" root-caused: agents spawned before the
+  session-4 feature still run their old argv; fix is operational
+  (kill+resume) — left to the user.
+- Audited every ppz CLI call against ppz source; `ppzReady()` exact-match
+  fix already landed in 1bbc435.
+- KNOWN BUG (open): `muster ls`'s unread badge is a lifetime count, not
+  unread — mstrctl never does a cursor-advancing `read` (`ppzReadInbox`
+  is dead code). Candidate fix: cursor-advancing read when a room/agent
+  view is opened, Slack-style.
+- Room chat compose line: send errors get their own status line below the
+  input (appending to the input line soft-wrapped and corrupted the
+  bubbletea alt-screen frame); `roomRefreshedMsg` split from
+  `roomTickMsg` so one-shot refreshes don't arm a second tick loop.
 
 ## Session 4: rooms, right-click everywhere, quality-of-life
 
@@ -247,14 +297,16 @@ selected agent's REAL terminal (nested tmux client) — see DESIGN.md.
 - cmd+click on file paths is terminal-emulator territory (iTerm semantic
   history), not reachable from tmux — `v` / right-click is the muster way.
   glow isn't installed on this machine; .md falls back to bat (fine).
-- room shows member-inbox traffic only (no dedicated room pipe); an agent
-  messaging someone OUTSIDE the room shows in the recipient's room, not
-  the sender's. Acceptable until rooms get their own broadcast pipe.
+- rooms are backed by a shared uncollared pipe since session 6; the view
+  still unions member-inbox DMs, so an agent messaging someone OUTSIDE the
+  room shows in the recipient's room, not the sender's. Acceptable.
+- unread badge counts lifetime messages, not unread (see session 5 notes;
+  `ppzReadInbox` is dead code awaiting the Slack-style cursor fix).
 - command-prompt inputs with double quotes would break rmenu's send/cron
   shell templates (user typing into their own shell — not a boundary).
-- ~~Sidebar `i` inbox clipped to 38 cols~~ fixed session 5 (popup); the
+- ~~Sidebar `i` inbox clipped to 38 cols~~ fixed session 7 (popup); the
   `C` schedules list still renders in the sidebar (rarely long — fine).
-- ~~Pinned split panes get default titles~~ fixed session 5 (wpin).
+- ~~Pinned split panes get default titles~~ fixed session 7 (wpin).
 - Stall threshold (10m) is a guess — one long tool call (big build) can
   false-positive. Tune after dogfood; MUSTER_STALL_MIN=0 disables.
 - `review` picks the FIRST live role~review agent; no round-robin.

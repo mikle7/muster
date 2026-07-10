@@ -4,7 +4,7 @@
 > (sorted by reactions), full HN launch threads, practitioner blog posts,
 > Cursor/OpenAI forums. Reddit blocks crawlers, so Reddit sentiment arrives
 > second-hand via archives and blogs. This file is the evidence; the
-> feature decisions it produced are in RESEARCH.md ("session 5") and
+> feature decisions it produced are in RESEARCH.md ("session 7") and
 > DESIGN.md.
 
 ## Tools examined (14)
@@ -100,7 +100,7 @@ agents**, **OpenAI Codex cloud**, **Google Jules**, **container-use**.
     file-based state + escalation to a human. muster's named-agent mesh +
     standup is the right shape; keep human-in-the-loop defaults.
 
-## What we shipped in response (session 5)
+## What we shipped in response (session 7)
 
 | finding | muster answer |
 |---|---|

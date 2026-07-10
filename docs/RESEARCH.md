@@ -221,7 +221,7 @@ scheduling. That's muster.
 5. The scheduling + always-on story (hosted pipescloud.io) is a
    differentiator herdr entirely lacks.
 
-## Session 5 addendum: the 14-competitor pain sweep (2026-07-09)
+## Session 7 addendum: the 14-competitor pain sweep (2026-07-09)
 
 Full evidence (per-tool findings, ranked cross-tool pain list, ~80 source
 URLs): **docs/COMPETITORS.md**. What it changed here:

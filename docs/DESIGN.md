@@ -216,7 +216,7 @@ Consequences / details:
   workspace is its own setup terminal. ppzCmd always sets NO_COLOR +
   PPZ_UPDATE_CHECK=0; ppzReady cached 10s (the TUI ticks 2s).
 
-## Session 5 — the competitive sweep (see docs/COMPETITORS.md)
+## Session 7 — the competitive sweep (see docs/COMPETITORS.md)
 
 Fourteen competitors' pain points, distilled into five decisions:
 
