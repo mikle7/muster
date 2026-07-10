@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Workspace mode: `muster` always runs its UI inside a dedicated tmux
@@ -27,8 +28,8 @@ func bootstrapWorkspace() int {
 	if cwd, err := os.Getwd(); err == nil {
 		setSpace(cwd)
 	}
-	if tmuxHasSession(wsSession) && !workspaceAlive() {
-		_ = tmuxKillSession(wsSession) // continuum-restored shell or crashed TUI
+	if tmuxHasSession(wsSession) && (!workspaceAlive() || workspaceBinaryChanged()) {
+		_ = tmuxKillSession(wsSession) // continuum-restored shell, crashed TUI, or rebuilt binary
 	}
 	if !tmuxHasSession(wsSession) {
 		args := []string{"new-session", "-d", "-s", wsSession, "-e", "MUSTER_EMBEDDED=1"}
@@ -99,6 +100,25 @@ func workspaceAlive() bool {
 		}
 	}
 	return false
+}
+
+// workspaceBinaryChanged reports whether the on-disk muster binary is newer
+// than the running workspace session was created — meaning a rebuild happened
+// since launch, and we should restart fresh to pick up the new binary (#15).
+func workspaceBinaryChanged() bool {
+	out, err := tmuxRun("display-message", "-t", "="+wsSession+":", "-p", "#{session_created}")
+	if err != nil {
+		return false
+	}
+	secs, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(selfExe())
+	if err != nil {
+		return false
+	}
+	return info.ModTime().After(time.Unix(secs, 0))
 }
 
 // ---- right pane (the live agent view), driven by the embedded TUI ----------

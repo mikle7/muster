@@ -809,6 +809,23 @@ func cmdDoctor(args []string) int {
 	return 0
 }
 
+// cmdSourceDestroy removes a remote agent's ppz source — used to clear
+// offline mesh rows from the sidebar permanently. Internal: invoked via the
+// K prompt on a dead remote row (the user confirms in the TUI first).
+func cmdSourceDestroy(args []string) int {
+	if len(args) != 1 {
+		return fail(errf("usage: muster source-destroy <handle>"))
+	}
+	if err := requirePpz(); err != nil {
+		return fail(err)
+	}
+	if err := ppzSourceDestroy(args[0]); err != nil {
+		return fail(err)
+	}
+	fmt.Printf("removed %s from the mesh (source destroyed)\n", args[0])
+	return 0
+}
+
 type multiFlag []string
 
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }

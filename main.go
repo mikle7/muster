@@ -39,7 +39,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   doctor                  environment checks
   hook                    (internal) claude hook sink
 
-state: ⚙ working  ⌛ stalled (working, no events)  ✋ blocked  ✔ idle  ☠ dead
+state: ⚙ working  ⌛ stalled  ✋ blocked (needs input)  → idle+unread  ✔ idle  ☠ dead
 env: MUSTER_DEFAULT_CMD, MUSTER_PPZ, MUSTER_STATE_DIR, MUSTER_STALL_MIN, MUSTER_REFRESH_PCT
 config: <state>/config.json — skip_permissions (default true), repo_roots, repo_depth, stall_after_min, refresh_ctx_pct (auto context refresh at this ctx% when idle; 0 off, default 75)
 worktree env: .worktreeinclude copies files; .muster/setup runs in the pane before the agent
@@ -57,6 +57,7 @@ func main() {
 		"cron": cmdCron, "project": cmdProject, "standup": cmdStandup, "room": cmdRoom,
 		"init": cmdInit, "doctor": cmdDoctor, "hook": cmdHook,
 		"rmenu": cmdRmenu, "fmenu": cmdFmenu, "wpin": cmdWpin, // internal: tmux menu callbacks
+		"source-destroy": cmdSourceDestroy, // internal: clear offline mesh agent
 	}
 	if os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h" {
 		fmt.Print(usage)

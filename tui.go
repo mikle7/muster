@@ -33,13 +33,50 @@ var (
 	sTitle    = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	sDim      = lipgloss.NewStyle().Foreground(cDim)
 	sProj     = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
+	sProjSel  = lipgloss.NewStyle().Bold(true).Background(cAccent).Foreground(lipgloss.AdaptiveColor{Light: "255", Dark: "232"})
 	sSelected = lipgloss.NewStyle().Bold(true).Background(cAccent).Foreground(lipgloss.AdaptiveColor{Light: "255", Dark: "232"})
 	sHelp     = lipgloss.NewStyle().Foreground(cDim)
 	sStatus   = lipgloss.NewStyle().Foreground(cIdle)
 	sErr      = lipgloss.NewStyle().Foreground(cBlocked)
 	sButton   = lipgloss.NewStyle().Bold(true).Foreground(cAccent).Background(lipgloss.AdaptiveColor{Light: "254", Dark: "236"})
 	sField    = lipgloss.NewStyle().Foreground(cAccent)
+
+	// projColors: 6 distinct colours cycled by project name hash so every
+	// project gets a stable, visually distinct header colour.
+	projColors = []lipgloss.AdaptiveColor{
+		{Light: "61", Dark: "141"},  // purple (accent)
+		{Light: "64", Dark: "114"},  // green
+		{Light: "136", Dark: "178"}, // gold
+		{Light: "31", Dark: "74"},   // cyan
+		{Light: "125", Dark: "168"}, // magenta
+		{Light: "167", Dark: "209"}, // orange
+	}
 )
+
+// projColor returns a stable colour for proj derived from its name.
+func projColor(proj string) lipgloss.AdaptiveColor {
+	if proj == "" {
+		return cDim
+	}
+	h := 0
+	for _, c := range proj {
+		h = h*31 + int(c)
+	}
+	if h < 0 {
+		h = -h
+	}
+	return projColors[h%len(projColors)]
+}
+
+// markReadCmd returns a background tea.Cmd that advances mstrctl's read
+// cursor on handle's inbox so the unread badge clears after opening an agent.
+func markReadCmd(handle string) tea.Cmd {
+	h := handle
+	return func() tea.Msg {
+		ppzMarkRead(h)
+		return nil
+	}
+}
 
 func stateStyle(state string) lipgloss.Style {
 	switch state {
@@ -817,7 +854,8 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		menu := []string{"display-menu", "-T", " " + it.row.Name + " ", "-x", mx, "-y", my}
 		switch {
 		case it.row.Remote && it.row.State == "dead":
-			menu = append(menu, "(offline on the mesh — nothing to do here)", "", "")
+			// K triggers the confirm prompt in the TUI's key handler (#4)
+			menu = append(menu, "clear from mesh…", "k", self+"K")
 		case it.row.Remote:
 			// mesh-only: no local tmux/dir/worktree, so only the
 			// mesh-messaging actions apply — everything else is local-only
@@ -857,7 +895,8 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if it.row.Wt {
 				menu = append(menu, "done (merge & clean)…", "D", self+"D")
 			}
-			menu = append(menu, "kill…", "k", self+"K")
+			menu = append(menu, "kill…", "k", self+"K",
+				"kill+remove…", "x", self+"X")
 		}
 		_, _ = tmuxRun(menu...)
 		return m, cmd
@@ -1129,7 +1168,8 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status, m.statErr = "attached to "+name+" (mesh) — Ctrl-\\ detaches, Ctrl-C passes through", false
 		}
 		m.wp.focus()
-		return m, nil
+		// advance mstrctl's read cursor so the unread badge clears (#8)
+		return m, markReadCmd(name)
 
 	case "s":
 		if name == "" {
@@ -1385,31 +1425,60 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		popupSelf("inbox " + name)
-		return m, nil
+		// opening inbox means the user is reading it — advance cursor (#8)
+		return m, markReadCmd(name)
 
 	case "K":
 		if name == "" {
 			return m, nil
 		}
 		if sel.Remote {
-			m.status, m.statErr = name+" isn't a local agent — nothing to kill here", true
+			if sel.State != "dead" {
+				m.status, m.statErr = name+" is a remote mesh agent — use X to clear offline ones", true
+				return m, nil
+			}
+			// offline remote: offer to destroy its ppz source (#4)
+			n := name
+			m.openPrompt(promptSpec{
+				label: "clear " + n + " from mesh", placeholder: "y to destroy its ppz source (permanent)",
+				argv: func(t string) []string {
+					if !strings.HasPrefix(t, "y") {
+						return []string{"ls"}
+					}
+					return []string{"source-destroy", n}
+				},
+			})
 			return m, nil
 		}
 		n := name
 		m.openPrompt(promptSpec{
-			label: "kill " + n, placeholder: "y = kill · y --rm = kill+remove worktree/spec",
+			label: "kill " + n, placeholder: "y = kill (spec kept for resume) · see X to also remove",
 			argv: func(t string) []string {
 				args := []string{"kill", n}
-				if strings.Contains(t, "--rm") {
-					args = append(args, "--rm")
-				}
-				if strings.Contains(t, "--force") {
-					args = append(args, "--force")
-				}
 				if !strings.HasPrefix(t, "y") {
 					return []string{"ls"} // anything but y… = no-op
 				}
 				return args
+			},
+		})
+		return m, nil
+
+	case "X": // kill + remove spec in one step (#5)
+		if name == "" {
+			return m, nil
+		}
+		if sel.Remote {
+			m.status, m.statErr = name+" is a remote mesh agent — K to clear it from the mesh", true
+			return m, nil
+		}
+		n := name
+		m.openPrompt(promptSpec{
+			label: "kill+remove " + n, placeholder: "y to kill and wipe spec (use K to keep for resume)",
+			argv: func(t string) []string {
+				if !strings.HasPrefix(t, "y") {
+					return []string{"ls"}
+				}
+				return []string{"kill", n, "--rm"}
 			},
 		})
 		return m, nil
@@ -1455,7 +1524,8 @@ const helpText = `sidebar
  D        done: merge worktree & clean
  T        standup — all agents report
  M        pipes: team, messages, setup
- K        kill (y / y --rm)
+ K        kill (keep spec for resume)
+ X        kill+remove (wipe spec too)
  r / R    resume sel / all
  i        inbox   c/C schedule/list
  o        sort: attention ⇄ projects
@@ -1697,7 +1767,14 @@ func (m tuiModel) renderItem(i int) string {
 		if pad < 1 {
 			pad = 1
 		}
-		return sProj.Render("▍"+label) + mark + strings.Repeat(" ", pad) + sDim.Render("+")
+		// highlight the active room's project header (#3)
+		if it.projName != "" && it.projName == m.roomView {
+			full := "▍" + label + mark + strings.Repeat(" ", pad) + "+"
+			return sProjSel.Render(fmt.Sprintf("%-*s", w, full))
+		}
+		// per-project colour (#6)
+		pc := lipgloss.NewStyle().Bold(true).Foreground(projColor(it.projName))
+		return pc.Render("▍"+label) + mark + strings.Repeat(" ", pad) + sDim.Render("+")
 	}
 	if it.kind == "sub" { // the agent's checkout, dim, under its row
 		b := "⎇ " + it.row.Branch
@@ -1711,8 +1788,19 @@ func (m tuiModel) renderItem(i int) string {
 		return sDim.Render(body)
 	}
 	r := it.row
+	// idle+unread → show as "has messages" rather than plain idle (#2)
 	glyph := stateGlyph(r.State)
-	name := clip(r.Name, 13)
+	if r.State == "idle" && r.Unread > 0 {
+		glyph = "→"
+	}
+	// agents under a named project get extra indent to read as children (#7)
+	indent := 1
+	nameW := 13
+	if it.projName != "" {
+		indent = 2
+		nameW = 12
+	}
+	name := clip(r.Name, nameW)
 	unread := ""
 	if r.Unread > 0 {
 		unread = fmt.Sprintf("✉%d", r.Unread)
@@ -1726,11 +1814,12 @@ func (m tuiModel) renderItem(i int) string {
 		ext = "·ext"
 	}
 	right := strings.TrimSpace(strings.Join([]string{ext, unread, ctx, r.Age}, " "))
-	body := fmt.Sprintf(" %s %-13s %*s", glyph, name, w-19, right)
+	rightW := w - indent - 1 - 1 - nameW - 1 // indent + glyph + sp + name + sp
+	body := fmt.Sprintf("%*s%s %-*s %*s", indent, "", glyph, nameW, name, rightW, right)
 	if r.Name == m.selName {
 		return sSelected.Render(clip(body, w))
 	}
-	line := " " + stateStyle(r.State).Render(glyph) + " " + fmt.Sprintf("%-13s ", name)
+	line := strings.Repeat(" ", indent) + stateStyle(r.State).Render(glyph) + " " + fmt.Sprintf("%-*s ", nameW, name)
 	rightStyle := sDim
 	switch {
 	case unread != "":
@@ -1740,7 +1829,7 @@ func (m tuiModel) renderItem(i int) string {
 	case r.CtxPct >= 60:
 		rightStyle = lipgloss.NewStyle().Foreground(cWorking)
 	}
-	line += rightStyle.Render(fmt.Sprintf("%*s", w-19, right))
+	line += rightStyle.Render(fmt.Sprintf("%*s", rightW, right))
 	return line
 }
 

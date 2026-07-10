@@ -342,3 +342,23 @@ func ppzUnreadCounts() map[string]int {
 	}
 	return res
 }
+
+// ppzMarkRead advances mstrctl's read cursor on handle's inbox so the
+// unread badge clears after the user opens an agent. Fire-and-forget;
+// ignore errors (best-effort, mesh may be unavailable).
+func ppzMarkRead(handle string) {
+	if !ppzReady() || handle == "" {
+		return
+	}
+	ppzOut(ctlSession, "read", handle+".inbox", "--json")
+}
+
+// ppzSourceDestroy removes handle and all its pipes from the mesh.
+// Used to clear offline remote agents from the sidebar permanently.
+func ppzSourceDestroy(handle string) error {
+	out, err := ppzOut(ctlSession, "source", "destroy", handle)
+	if err != nil {
+		return errf("ppz source destroy %s: %s", handle, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
