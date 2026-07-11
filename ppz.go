@@ -389,11 +389,16 @@ func ppzUnreadCounts() map[string]int {
 // ppzMarkRead advances mstrctl's read cursor on handle's inbox so the
 // unread badge clears after the user opens an agent. Fire-and-forget;
 // ignore errors (best-effort, mesh may be unavailable).
+//
+// `ppz read` flood-caps at 10 messages per call by default — a backlog
+// bigger than that (any agent with a normal chatty session) left the
+// badge stuck nonzero after just one call (#8, round 1 regression).
+// -l 0 uncaps it so one mark-read call fully drains the cursor.
 func ppzMarkRead(handle string) {
 	if !ppzReady() || handle == "" {
 		return
 	}
-	ppzOut(ctlSession, "read", handle+".inbox", "--json")
+	ppzOut(ctlSession, "read", handle+".inbox", "-l", "0", "--json")
 }
 
 // ppzSourceDestroy removes handle and all its pipes from the mesh.

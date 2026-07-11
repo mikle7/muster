@@ -218,6 +218,12 @@ func hookEventState(event, notifMessage string) (state, reason string) {
 	case "PermissionRequest":
 		return "blocked", "permission"
 	case "Notification":
+		// idle_prompt fires ~60s after Stop just because the user hasn't
+		// replied yet — not stuck. Only permission_prompt/agent_needs_input
+		// (any other Notification text) are a genuine block (#2).
+		if strings.Contains(notifMessage, "waiting for your input") {
+			return "idle", ""
+		}
 		return "blocked", notifMessage
 	case "Stop", "SubagentStop":
 		return "idle", ""
