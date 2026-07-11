@@ -41,6 +41,38 @@ func TestApplyStall(t *testing.T) {
 	}
 }
 
+func TestCorrectStickyBlock(t *testing.T) {
+	hookTS := time.Now()
+	newer := hookTS.Add(time.Minute)
+	older := hookTS.Add(-time.Minute)
+	hb := func(state string, ts time.Time) ppzHeartbeat { return ppzHeartbeat{State: state, TS: ts} }
+
+	cases := []struct {
+		name       string
+		state      string
+		hb         ppzHeartbeat
+		hbOK       bool
+		wantState  string
+		wantReason bool // want reason == "heartbeat"
+	}{
+		{"working heartbeat newer clears block", "blocked", hb("working", newer), true, "working", true},
+		{"idle heartbeat does NOT clear block", "blocked", hb("idle", newer), true, "blocked", false},
+		{"older working heartbeat does NOT clear", "blocked", hb("working", older), true, "blocked", false},
+		{"no heartbeat leaves block", "blocked", ppzHeartbeat{}, false, "blocked", false},
+		{"non-blocked state untouched", "working", hb("idle", newer), true, "working", false},
+		{"blocked heartbeat leaves block", "blocked", hb("blocked", newer), true, "blocked", false},
+	}
+	for _, c := range cases {
+		st, r := correctStickyBlock(c.state, "orig", hookTS, c.hb, c.hbOK)
+		if st != c.wantState {
+			t.Errorf("%s: state = %q, want %q", c.name, st, c.wantState)
+		}
+		if c.wantReason && r != "heartbeat" {
+			t.Errorf("%s: reason = %q, want heartbeat", c.name, r)
+		}
+	}
+}
+
 // ---- event history ------------------------------------------------------------
 
 func TestEventsAppendLoad(t *testing.T) {

@@ -253,7 +253,7 @@ type lsRow struct {
 	Wt      bool    `json:"wt,omitempty"` // muster-created worktree
 	Tmux    string  `json:"tmux"`
 	Ppz     string  `json:"ppz,omitempty"`
-	Unread  int     `json:"unread"`
+	Inbox   int     `json:"inbox"` // messages retained in <handle>.inbox (depth, not unread)
 	Age     string  `json:"age"`
 	Cmd     string  `json:"cmd"`
 	Model   string  `json:"model,omitempty"`   // from claude statusline
@@ -270,13 +270,13 @@ func gatherRows() ([]lsRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	return buildRows(specs, ppzWho(), ppzUnreadCounts()), nil
+	return buildRows(specs, ppzWho(), ppzInboxDepth()), nil
 }
 
 // buildRows is gatherRows' pure core (no subprocess calls) so it's testable
 // with fabricated specs/heartbeats. Local rows come from specs, same as
 // always; remoteRows appends synthetic rows for mesh-only agents.
-func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, unread map[string]int) []lsRow {
+func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, inbox map[string]int) []lsRow {
 	ours := map[string]bool{}
 	var rows []lsRow
 	for _, s := range specs {
@@ -287,7 +287,7 @@ func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, unread map[string
 		r := lsRow{
 			Name: s.Name, Role: s.Role, State: state, Reason: reason, Harness: s.Harness,
 			Dir: s.Dir, Repo: s.Repo, Branch: s.Branch, Tmux: s.TmuxSession, Ppz: s.PpzHandle,
-			Unread: unread[s.PpzHandle], Age: fmtAge(s.CreatedAt), Cmd: shJoin(s.Argv),
+			Inbox: inbox[s.PpzHandle], Age: fmtAge(s.CreatedAt), Cmd: shJoin(s.Argv),
 		}
 		// what's REALLY checked out beats what spawn recorded
 		if lb := liveBranch(s.Dir); lb != "" {
@@ -304,7 +304,7 @@ func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, unread map[string
 		}
 		rows = append(rows, r)
 	}
-	return append(rows, remoteRows(hb, ours, unread)...)
+	return append(rows, remoteRows(hb, ours, inbox)...)
 }
 
 // remoteRows surfaces mesh-only agents: a live ppz heartbeat with a detected
@@ -314,7 +314,7 @@ func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, unread map[string
 // sidebar — same "ours" distinction meshBody already draws for the M view,
 // narrowed to actual agents. Tmux/Dir/Branch/Wt stay zero: there's no local
 // process or worktree behind these rows.
-func remoteRows(hb map[string]ppzHeartbeat, ours map[string]bool, unread map[string]int) []lsRow {
+func remoteRows(hb map[string]ppzHeartbeat, ours map[string]bool, inbox map[string]int) []lsRow {
 	handles := make([]string, 0, len(hb))
 	for h := range hb {
 		handles = append(handles, h)
@@ -338,7 +338,7 @@ func remoteRows(hb map[string]ppzHeartbeat, ours map[string]bool, unread map[str
 		}
 		rows = append(rows, lsRow{
 			Name: h, State: state, Reason: "heartbeat", Harness: hbEntry.Harness,
-			Ppz: h, Unread: unread[h], Model: hbEntry.Model, Remote: true, Host: hbEntry.Host,
+			Ppz: h, Inbox: inbox[h], Model: hbEntry.Model, Remote: true, Host: hbEntry.Host,
 			Project: hbEntry.Project,
 		})
 	}
@@ -367,7 +367,7 @@ func printRows(rows []lsRow) {
 			h = "-"
 		}
 		fmt.Printf("%-*s  %-2s %-8s %-9s %-6d %-4s %s%s\n",
-			w, r.Name, stateGlyph(r.State), r.State, h, r.Unread, r.Age, collapseHome(r.Dir), reason)
+			w, r.Name, stateGlyph(r.State), r.State, h, r.Inbox, r.Age, collapseHome(r.Dir), reason)
 	}
 }
 

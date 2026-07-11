@@ -234,7 +234,7 @@ func buildPriorityItems(rows []lsRow) []sideItem {
 		if a, b := stateRank(sorted[i].State), stateRank(sorted[j].State); a != b {
 			return a < b
 		}
-		return sorted[i].Unread > sorted[j].Unread
+		return sorted[i].Inbox > sorted[j].Inbox
 	})
 	var items []sideItem
 	for _, r := range sorted {
@@ -1371,7 +1371,7 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			r := m.items[idx].row
 			key := stateRank(r.State)
 			if key > 1 {
-				if r.Unread == 0 || r.State == "dead" {
+				if r.Inbox == 0 || r.State == "dead" {
 					continue
 				}
 				key = 2
@@ -1940,9 +1940,11 @@ func (m tuiModel) renderItem(i int) string {
 		return sDim.Render(body)
 	}
 	r := it.row
-	// idle+unread → show as "has messages" rather than plain idle (#2)
+	// idle + non-empty inbox → show as "has messages" rather than plain idle
+	// (#2). NB: Inbox is retained depth, not per-agent unread (see
+	// ppzInboxDepth), so this fires for any idle agent with inbox history.
 	glyph := stateGlyph(r.State)
-	if r.State == "idle" && r.Unread > 0 {
+	if r.State == "idle" && r.Inbox > 0 {
 		glyph = "→"
 	}
 	// agents under a named project get extra indent to read as children (#7)
@@ -1953,9 +1955,9 @@ func (m tuiModel) renderItem(i int) string {
 		nameW = 12
 	}
 	name := clip(r.Name, nameW)
-	unread := ""
-	if r.Unread > 0 {
-		unread = fmt.Sprintf("✉%d", r.Unread)
+	inbox := ""
+	if r.Inbox > 0 {
+		inbox = fmt.Sprintf("▤%d", r.Inbox)
 	}
 	ctx := ""
 	if r.CtxPct > 0 {
@@ -1965,7 +1967,7 @@ func (m tuiModel) renderItem(i int) string {
 	if r.Remote { // mesh-only agent, no local session — meshBody uses the same marker
 		ext = "·ext"
 	}
-	right := strings.TrimSpace(strings.Join([]string{ext, unread, ctx, r.Age}, " "))
+	right := strings.TrimSpace(strings.Join([]string{ext, inbox, ctx, r.Age}, " "))
 	rightW := w - indent - 1 - 1 - nameW - 1 // indent + glyph + sp + name + sp
 	body := fmt.Sprintf("%*s%s %-*s %*s", indent, "", glyph, nameW, name, rightW, right)
 	if r.Name == m.selName {
@@ -1974,7 +1976,7 @@ func (m tuiModel) renderItem(i int) string {
 	line := strings.Repeat(" ", indent) + stateStyle(r.State).Render(glyph) + " " + fmt.Sprintf("%-*s ", nameW, name)
 	rightStyle := sDim
 	switch {
-	case unread != "":
+	case inbox != "":
 		rightStyle = lipgloss.NewStyle().Foreground(cWorking)
 	case r.CtxPct >= 80:
 		rightStyle = sErr
@@ -2006,8 +2008,8 @@ func (m tuiModel) viewDetail() string {
 		l2 = " " + sErr.Render(clip("✋ "+r.Reason, w-1))
 	case r.Model != "":
 		info := fmt.Sprintf("%s · ctx %d%%", r.Model, int(r.CtxPct))
-		if r.Unread > 0 {
-			info += fmt.Sprintf(" · ✉ %d", r.Unread)
+		if r.Inbox > 0 {
+			info += fmt.Sprintf(" · ▤ %d", r.Inbox)
 		}
 		l2 = " " + sDim.Render(clip(info, w-1))
 	case r.Harness != "":

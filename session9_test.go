@@ -88,12 +88,12 @@ func TestBuildRowsOfflineRemoteIsDead(t *testing.T) {
 	}
 }
 
-func TestBuildRowsRemoteUnreadCount(t *testing.T) {
+func TestBuildRowsRemoteInboxDepth(t *testing.T) {
 	hb := map[string]ppzHeartbeat{"quinn": {Handle: "quinn", Status: "online", State: "idle", Harness: "claude"}}
-	unread := map[string]int{"quinn": 3}
-	rows := buildRows(nil, hb, unread)
-	if len(rows) != 1 || rows[0].Unread != 3 {
-		t.Fatalf("got %+v, want unread=3", rows)
+	inbox := map[string]int{"quinn": 3}
+	rows := buildRows(nil, hb, inbox)
+	if len(rows) != 1 || rows[0].Inbox != 3 {
+		t.Fatalf("got %+v, want inbox=3", rows)
 	}
 }
 

@@ -190,8 +190,9 @@ func subscribeRoom(session, pipe string) {
 
 type ppzHeartbeat struct {
 	Handle  string
-	Status  string // online|stale|offline
-	State   string // ""|idle|working|blocked
+	Status  string    // online|stale|offline
+	State   string    // ""|idle|working|blocked
+	TS      time.Time // heartbeat emit time (payload "ts"); zero if unparseable
 	Harness string
 	Model   string
 	Host    string
@@ -213,6 +214,7 @@ func ppzWho() map[string]ppzHeartbeat {
 		Handle    string `json:"handle"`
 		Status    string `json:"status"`
 		Heartbeat struct {
+			TS         string `json:"ts"`
 			AgentState string `json:"agent_state"`
 			Harness    string `json:"harness"`
 			Model      string `json:"model"`
@@ -224,8 +226,9 @@ func ppzWho() map[string]ppzHeartbeat {
 		return res
 	}
 	for _, r := range rows {
+		ts, _ := time.Parse(time.RFC3339, r.Heartbeat.TS) // zero on parse failure
 		res[r.Handle] = ppzHeartbeat{
-			Handle: r.Handle, Status: r.Status, State: r.Heartbeat.AgentState,
+			Handle: r.Handle, Status: r.Status, State: r.Heartbeat.AgentState, TS: ts,
 			Harness: r.Heartbeat.Harness, Model: r.Heartbeat.Model, Host: r.Heartbeat.Hostname,
 			Project: r.Heartbeat.Project,
 		}
@@ -371,16 +374,20 @@ func ppzSourceExists(handle string) bool {
 	return len(ppzLs(handle+".*")) > 0
 }
 
-// ppzUnreadCounts returns unread message counts per "<handle>.inbox"
-// according to the ctl session's cursors (cheap glance for `muster ls`).
-func ppzUnreadCounts() map[string]int {
+// ppzInboxDepth returns the number of messages retained in each
+// "<handle>.inbox" — inbox depth, NOT per-agent unread. muster runs as the
+// muster-ctl session and never advances a cursor on any agent inbox
+// (ppzReadInbox is unused), so an unread count from muster-ctl's cursor is
+// meaningless (it equals the full retained total and never clears). Total is
+// the honest, cursor-independent signal: how much mail is sitting there.
+func ppzInboxDepth() map[string]int {
 	res := map[string]int{}
 	if !ppzReady() {
 		return res
 	}
 	for _, r := range ppzLs("") {
 		if r.Pipe == "inbox" {
-			res[r.Handle] = r.Unread
+			res[r.Handle] = r.Total
 		}
 	}
 	return res

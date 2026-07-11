@@ -460,7 +460,9 @@ func liveState(s *AgentSpec, hb map[string]ppzHeartbeat) (state, reason string) 
 	}
 	if s.SessionUUID != "" {
 		if st := loadStatus(s.SessionUUID); st != nil && st.TS.After(launched) {
-			return applyStall(st.State, st.Reason, st.TS, stallAfter(), time.Now())
+			state, reason := applyStall(st.State, st.Reason, st.TS, stallAfter(), time.Now())
+			h, ok := hb[s.PpzHandle]
+			return correctStickyBlock(state, reason, st.TS, h, ok && s.PpzHandle != "")
 		}
 	}
 	if s.PpzHandle != "" {
@@ -469,6 +471,21 @@ func liveState(s *AgentSpec, hb map[string]ppzHeartbeat) (state, reason string) 
 		}
 	}
 	return "unknown", ""
+}
+
+// correctStickyBlock lets a fresh "working" heartbeat override a stale
+// hook-derived "blocked". The Notification hook that sets "blocked" has no
+// reliable unblock counterpart, so it can outlive the block; a heartbeat
+// reporting "working" NEWER than that hook event is positive proof the agent
+// resumed (working is definitionally incompatible with waiting-for-input).
+// Deliberately only "working", not "idle": idle is ambiguous (an agent
+// sitting at a blocked prompt reads idle too), so it must not clear a real
+// block. Pure for testability.
+func correctStickyBlock(state, reason string, hookTS time.Time, hb ppzHeartbeat, hbOK bool) (string, string) {
+	if state == "blocked" && hbOK && hb.State == "working" && hb.TS.After(hookTS) {
+		return "working", "heartbeat"
+	}
+	return state, reason
 }
 
 // applyStall derives "stalled" from a working status that hasn't produced a

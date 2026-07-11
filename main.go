@@ -17,7 +17,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   spawn <name> [--role txt] [-C dir | --repo dir -b branch] [-e K=V]... [--] [cmd...]
                           start an agent (default cmd: $MUSTER_DEFAULT_CMD or claude)
   q [cmd...]              quick spawn: auto-named chat-XXXX in cwd, workspace bucket
-  ls [--json] [--watch]   every agent: state, unread, age
+  ls [--json] [--watch]   every agent: state, inbox depth, age
   attach <name>           go to an agent (switch-client inside tmux)
   menu                    tmux popup picker (bind a key to this)
   resume <name>|--all     restart dead agents with their EXACT original command
@@ -41,7 +41,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   doctor                  environment checks
   hook                    (internal) claude hook sink
 
-state: ⚙ working  ⌛ stalled  ✋ blocked (needs input)  → idle+unread  ✔ idle  ☠ dead
+state: ⚙ working  ⌛ stalled  ✋ blocked (needs input)  → idle+mail  ✔ idle  ☠ dead
 env: MUSTER_DEFAULT_CMD, MUSTER_PPZ, MUSTER_STATE_DIR, MUSTER_STALL_MIN, MUSTER_REFRESH_PCT
 config: <state>/config.json — skip_permissions (default true), repo_roots, repo_depth, stall_after_min, refresh_ctx_pct (auto context refresh at this ctx% when idle; 0 off, default 75)
 worktree env: .worktreeinclude copies files; .muster/setup runs in the pane before the agent
