@@ -281,6 +281,13 @@ func cmdHook(args []string) int {
 	if state == "blocked" && (prev == nil || prev.State != "blocked") {
 		notifyBlocked(payload.SessionID, reason)
 	}
+	// generic event-stream publish (muster-events pipe) — any external
+	// client (voice service, mobile, Home Assistant...) subscribed there
+	// hears about this transition. Best-effort: a mesh hiccup must never
+	// break the agent it's reporting on.
+	if ev := eventForTransition(resolveAgentName(payload.SessionID), prev, st); ev != nil {
+		_ = publishEvent(*ev)
+	}
 	// a fresh post-/clear context gets the agent's handoff notes back —
 	// stdout from a SessionStart hook is injected as context (docs:
 	// hookSpecificOutput.additionalContext), so nothing needs re-explaining
@@ -374,17 +381,7 @@ func notifyBlocked(sessionUUID, reason string) {
 	if os.Getenv("MUSTER_NOTIFY") == "0" || runtime.GOOS != "darwin" {
 		return
 	}
-	name := os.Getenv("MUSTER_AGENT") // set in every muster tmux session
-	if name == "" {
-		if specs, _ := listSpecs(); specs != nil {
-			for _, s := range specs {
-				if s.SessionUUID == sessionUUID {
-					name = s.Name
-					break
-				}
-			}
-		}
-	}
+	name := resolveAgentName(sessionUUID)
 	if name == "" {
 		name = "an agent"
 	}
