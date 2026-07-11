@@ -356,7 +356,7 @@ func printRows(rows []lsRow) {
 			w = len(r.Name)
 		}
 	}
-	fmt.Printf("%-*s  %-2s %-8s %-9s %-6s %-4s %s\n", w, "NAME", "", "STATE", "HARNESS", "UNREAD", "AGE", "DIR")
+	fmt.Printf("%-*s  %-2s %-8s %-9s %-6s %-4s %s\n", w, "NAME", "", "STATE", "HARNESS", "INBOX", "AGE", "DIR")
 	for _, r := range rows {
 		reason := ""
 		if r.Reason != "" && r.Reason != "heartbeat" {
