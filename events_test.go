@@ -17,8 +17,8 @@ func TestEventForTransition(t *testing.T) {
 		{"cold start into working", nil, AgentStatus{State: "working", TS: now}, "agent.progress", false},
 		{"same-state re-report is suppressed", &AgentStatus{State: "working"}, AgentStatus{State: "working", TS: now}, "", true},
 		{"idle -> blocked is a question", &AgentStatus{State: "idle"}, AgentStatus{State: "blocked", Reason: "needs your permission to use Bash", TS: now}, "agent.question", false},
-		{"working -> idle is a notification", &AgentStatus{State: "working"}, AgentStatus{State: "idle", TS: now}, "agent.notification", false},
-		{"working -> ended is a notification", &AgentStatus{State: "working"}, AgentStatus{State: "ended", TS: now}, "agent.notification", false},
+		{"working -> idle no longer publishes (routine fleet-completion noise for voice)", &AgentStatus{State: "working"}, AgentStatus{State: "idle", TS: now}, "", true},
+		{"working -> ended no longer publishes (routine fleet noise)", &AgentStatus{State: "working"}, AgentStatus{State: "ended", TS: now}, "", true},
 		{"unmapped state is suppressed", &AgentStatus{State: "working"}, AgentStatus{State: "unknown", TS: now}, "", true},
 	}
 	for _, c := range cases {
