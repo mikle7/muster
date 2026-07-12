@@ -49,7 +49,13 @@ func ppzTimeout() time.Duration {
 }
 
 func ppzRun(session string, combined bool, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), ppzTimeout())
+	return ppzRunTimeout(session, combined, ppzTimeout(), args...)
+}
+
+// ppzRunTimeout is ppzRun with an explicit timeout instead of the package
+// default — see ppzOutFast for why a caller would want a shorter one.
+func ppzRunTimeout(session string, combined bool, timeout time.Duration, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	c := exec.CommandContext(ctx, ppzBin(), args...)
 	c.Env = append(os.Environ(), "PPZ_SESSION="+session, "NO_COLOR=1", "PPZ_UPDATE_CHECK=0")
@@ -62,9 +68,27 @@ func ppzRun(session string, combined bool, args ...string) ([]byte, error) {
 		out, err = c.Output()
 	}
 	if ctx.Err() == context.DeadlineExceeded {
-		return out, errf("ppz %s timed out after %s (daemon wedged? ppz daemon restart)", args[0], ppzTimeout())
+		return out, errf("ppz %s timed out after %s (daemon wedged? ppz daemon restart)", args[0], timeout)
 	}
 	return out, err
+}
+
+// eventPublishTimeout bounds each subprocess call the best-effort
+// muster-events publish path makes (see events.go) — deliberately much
+// shorter than ppzTimeout()'s general 10s default. cmdHook runs
+// SYNCHRONOUSLY inside every Claude Code tool call fleet-wide (a
+// PreToolUse hook blocks the tool until the hook process exits), and a
+// publish can cost up to 4 chained ppz subprocess calls (ensure handle,
+// ensure pipe, ensure handle again inside ppzSend, the actual send) — at
+// the 10s default plus WaitDelay's 2s SIGKILL grace each, one wedged mesh
+// moment could stall a single tool call by up to ~48s. A dropped event is
+// fully recoverable (the next transition republishes); a stalled tool
+// call, fleet-wide, is not. 2s keeps the same failure by 4 calls bounded
+// to ~8s worst case even under a genuinely wedged daemon.
+const eventPublishTimeout = 2 * time.Second
+
+func ppzOutFast(session string, args ...string) ([]byte, error) {
+	return ppzRunTimeout(session, true, eventPublishTimeout, args...)
 }
 
 func ppzOut(session string, args ...string) ([]byte, error) {

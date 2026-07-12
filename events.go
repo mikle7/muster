@@ -36,13 +36,38 @@ type AgentEvent struct {
 // per-project: there's one event stream for the whole fleet.
 const eventsPipe = "muster-events"
 
+// ensureCtlHandleFast/ensureEventsPipe/publishEvent deliberately do NOT
+// reuse ensureCtlHandle/ppzSend (ppz.go) — those are shared by room chat,
+// standup, and review-request sends, which should keep the general 10s
+// ppzTimeout(). This path runs inside cmdHook, synchronously, on every
+// qualifying tool call fleet-wide (see eventPublishTimeout's docstring in
+// ppz.go) — it needs its own short timeout without changing anyone else's.
+
+// ensureCtlHandleFast is ensureCtlHandle (ppz.go), bounded to
+// eventPublishTimeout instead of the general ppzTimeout().
+func ensureCtlHandleFast() error {
+	out, err := ppzRunTimeout(ctlSession, false, eventPublishTimeout, "get", "handle")
+	if err == nil && strings.TrimSpace(string(out)) == ctlHandle {
+		return nil
+	}
+	if out, err := ppzOutFast(ctlSession, "source", "create", ctlHandle); err != nil {
+		if !strings.Contains(string(out), "E_SOURCE_TAKEN") && !strings.Contains(string(out), "E_NAME_TAKEN") {
+			return errf("ppz source create %s: %s (%v)", ctlHandle, out, err)
+		}
+		if out, err := ppzOutFast(ctlSession, "set", "handle", ctlHandle); err != nil {
+			return errf("ppz set handle: %s (%v)", out, err)
+		}
+	}
+	return nil
+}
+
 // ensureEventsPipe creates the pipe (idempotent, tolerate already-exists —
 // same idiom as ensureRoomPipe).
 func ensureEventsPipe() error {
-	if err := ensureCtlHandle(); err != nil {
+	if err := ensureCtlHandleFast(); err != nil {
 		return err
 	}
-	if out, err := ppzOut(ctlSession, "pipe", "create", eventsPipe); err != nil {
+	if out, err := ppzOutFast(ctlSession, "pipe", "create", eventsPipe); err != nil {
 		if !strings.Contains(string(out), "E_PIPE_TAKEN") && !strings.Contains(string(out), "already exists") {
 			return errf("ppz pipe create %s: %s", eventsPipe, out)
 		}
@@ -50,7 +75,9 @@ func ensureEventsPipe() error {
 	return nil
 }
 
-// publishEvent emits ev on the shared event-stream pipe.
+// publishEvent emits ev on the shared event-stream pipe. Best-effort by
+// design (see eventPublishTimeout) — a mesh hiccup drops this one event,
+// never stalls the tool call cmdHook is reporting on.
 func publishEvent(ev AgentEvent) error {
 	if err := ensureEventsPipe(); err != nil {
 		return err
@@ -59,7 +86,10 @@ func publishEvent(ev AgentEvent) error {
 	if err != nil {
 		return err
 	}
-	return ppzSend(eventsPipe, string(b))
+	if out, err := ppzOutFast(ctlSession, "send", eventsPipe, string(b)); err != nil {
+		return errf("ppz send: %s (%v)", strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 // resolveAgentName maps a claude session uuid to its muster agent name:
