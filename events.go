@@ -25,6 +25,8 @@ type AgentEvent struct {
 	Message  string    `json:"message,omitempty"`  // notification
 	Question string    `json:"question,omitempty"` // question
 	Status   string    `json:"status,omitempty"`   // progress
+	Tool     string    `json:"tool,omitempty"`     // progress only, best-effort (see toolTarget)
+	Target   string    `json:"target,omitempty"`   // progress only, best-effort (see toolTarget)
 	TS       time.Time `json:"ts"`
 }
 
@@ -78,21 +80,30 @@ func resolveAgentName(sessionUUID string) string {
 }
 
 // eventForTransition maps a hook-derived state CHANGE to the generic
-// event-stream shape. Fires only on genuine transitions (prev.State !=
-// st.State) — PreToolUse/PostToolUse etc. re-report "working" on every tool
-// call, and publishing each one would flood external clients (a voice
-// service reading this stream doesn't want a spoken update per tool call).
-// Returns nil for a same-state re-report or a state this stream doesn't
-// cover ("stalled"/"dead"/"error" are read-time-only derivations in
+// event-stream shape. Fires on a genuine state transition (prev.State !=
+// st.State), OR — while staying "working" — on a tool/target change, so a
+// DEEP-turn narration consumer hears "reading auth.ts... running tests..."
+// instead of going stale after the first tool call. PreToolUse/PostToolUse
+// for the SAME call still collapse into one event (tool+target unchanged
+// between them). Publishing on every hook event regardless would flood
+// external clients (a voice service reading this stream doesn't want a
+// spoken update per tool call) — this is the narrower "did the thing worth
+// narrating actually change" gate instead.
+// Returns nil for a same-state/same-tool re-report or a state this stream
+// doesn't cover ("stalled"/"dead"/"error" are read-time-only derivations in
 // liveState, never written here — see status.go).
 func eventForTransition(agent string, prev *AgentStatus, st AgentStatus) *AgentEvent {
 	if prev != nil && prev.State == st.State {
-		return nil
+		toolChanged := st.State == "working" && st.Tool != "" &&
+			(st.Tool != prev.Tool || st.Target != prev.Target)
+		if !toolChanged {
+			return nil
+		}
 	}
 	ev := AgentEvent{Agent: agent, TS: st.TS}
 	switch st.State {
 	case "working":
-		ev.Type, ev.Status = "agent.progress", "working"
+		ev.Type, ev.Status, ev.Tool, ev.Target = "agent.progress", "working", st.Tool, st.Target
 	case "blocked":
 		ev.Type, ev.Question = "agent.question", st.Reason
 		if ev.Question == "" || ev.Question == "permission" {

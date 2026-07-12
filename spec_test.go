@@ -6,6 +6,33 @@ import (
 	"testing"
 )
 
+func TestToolTarget(t *testing.T) {
+	cases := []struct {
+		tool  string
+		input string
+		want  string
+	}{
+		{"Read", `{"file_path":"auth.ts"}`, "auth.ts"},
+		{"Edit", `{"file_path":"auth.ts","old_string":"a","new_string":"b"}`, "auth.ts"},
+		{"Write", `{"file_path":"new.ts","content":"..."}`, "new.ts"},
+		{"Bash", `{"command":"npm test"}`, "npm test"},
+		{"Grep", `{"pattern":"TODO"}`, "TODO"},
+		{"Glob", `{"pattern":"**/*.go"}`, "**/*.go"},
+		{"WebFetch", `{"url":"https://example.com"}`, "https://example.com"},
+		{"WebSearch", `{"query":"golang generics"}`, "golang generics"},
+		{"Task", `{"description":"find the bug","prompt":"..."}`, "find the bug"},
+		{"SomeFutureTool", `{"file_path":"x"}`, ""}, // unrecognized tool: don't guess
+		{"Read", `not json`, ""},                    // unparseable: don't guess
+		{"Read", ``, ""},                            // empty tool_input (e.g. non-tool hook events)
+	}
+	for _, c := range cases {
+		got := toolTarget(c.tool, []byte(c.input))
+		if got != c.want {
+			t.Errorf("toolTarget(%q, %q) = %q, want %q", c.tool, c.input, got, c.want)
+		}
+	}
+}
+
 // pinState isolates dataDir so the developer's real config.json can't leak
 // into compose behavior (skip_permissions defaults to true with no config).
 func pinState(t *testing.T) {

@@ -21,6 +21,8 @@ type AgentStatus struct {
 	Reason    string    `json:"reason,omitempty"`
 	SessionID string    `json:"session_id"`
 	TS        time.Time `json:"ts"`
+	Tool      string    `json:"tool,omitempty"`   // PreToolUse/PostToolUse only
+	Target    string    `json:"target,omitempty"` // best-effort, see toolTarget
 }
 
 func statusPath(sessionUUID string) string {
@@ -233,6 +235,44 @@ func hookEventState(event, notifMessage string) (state, reason string) {
 	return "", ""
 }
 
+// toolTarget extracts a best-effort "what is this tool acting on" string
+// from a PreToolUse/PostToolUse hook's tool_input — one known field per
+// tool, matching Claude Code's actual tool_input shapes. Returns "" for an
+// unrecognized tool or unparseable input rather than guessing wrong; a
+// narration consumer can fall back to just the tool name in that case.
+func toolTarget(toolName string, toolInput json.RawMessage) string {
+	if len(toolInput) == 0 {
+		return ""
+	}
+	var in struct {
+		FilePath    string `json:"file_path"`
+		Command     string `json:"command"`
+		Pattern     string `json:"pattern"`
+		URL         string `json:"url"`
+		Query       string `json:"query"`
+		Description string `json:"description"`
+	}
+	if json.Unmarshal(toolInput, &in) != nil {
+		return ""
+	}
+	switch toolName {
+	case "Read", "Edit", "Write", "NotebookEdit":
+		return in.FilePath
+	case "Bash":
+		return in.Command
+	case "Grep", "Glob":
+		return in.Pattern
+	case "WebFetch":
+		return in.URL
+	case "WebSearch":
+		return in.Query
+	case "Task":
+		return in.Description
+	default:
+		return ""
+	}
+}
+
 // cmdHook is the hook sink: reads the hook JSON from stdin, writes the
 // status file. Registered for every event in the muster hooks settings.
 // Must never fail loudly — a broken status write must not break the agent.
@@ -245,10 +285,12 @@ func cmdHook(args []string) int {
 		return 0
 	}
 	var payload struct {
-		HookEventName string `json:"hook_event_name"`
-		SessionID     string `json:"session_id"`
-		Source        string `json:"source"` // SessionStart: startup|resume|clear|compact
-		Message       string `json:"message"`
+		HookEventName string          `json:"hook_event_name"`
+		SessionID     string          `json:"session_id"`
+		Source        string          `json:"source"` // SessionStart: startup|resume|clear|compact
+		Message       string          `json:"message"`
+		ToolName      string          `json:"tool_name"`  // PreToolUse/PostToolUse only
+		ToolInput     json.RawMessage `json:"tool_input"` // shape varies per tool, see toolTarget
 	}
 	if json.Unmarshal(raw, &payload) != nil || payload.SessionID == "" {
 		return 0
@@ -269,6 +311,7 @@ func cmdHook(args []string) int {
 	st := AgentStatus{
 		State: state, Event: payload.HookEventName, Reason: reason,
 		SessionID: payload.SessionID, TS: time.Now(),
+		Tool: payload.ToolName, Target: toolTarget(payload.ToolName, payload.ToolInput),
 	}
 	if err := os.MkdirAll(statusDir(), 0o755); err != nil {
 		return 0
