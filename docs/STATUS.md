@@ -13,6 +13,128 @@ that then broke deliberate filtering, and a missing remain-on-exit that
 silently defeated the crash self-heal). Branch `feat/remote-attach`,
 uncommitted here — pushed for review.)
 
+## feat/event-stream-api: generic Muster event API (Phase 1)
+
+Herald, on branch `feat/event-stream-api` (uncommitted here). This is the
+"Muster event API" bullet from Phase 1 of the voice-interface design doc
+— which lives in `mikle7/muster-voice`'s `DESIGN.md`, NOT in this repo
+(greg corrected the original brief). Scope: publish a generic structured
+event stream any external client can subscribe to. Zero voice/TTS/STT/
+hardware code belongs here — that's muster-voice's job as one client
+among many ("everything is a client").
+
+Shipped as a new pipe on the existing ppz mesh transport, not a new
+protocol — same idiom as the per-project room pipes (`room.go`), just
+one shared global pipe: **`muster-events`**. `events.go` adds `AgentEvent`
+(matches DESIGN.md's three shapes: `agent.notification` {priority,
+message}, `agent.question` {question}, `agent.progress` {status}) and
+wires publishing into the existing hook sink (`cmdHook` in `status.go`),
+gated on genuine state TRANSITIONS only (`eventForTransition`) — hook
+events fire on every tool call, but a voice client doesn't want a spoken
+update per tool call. Mapping: `working` (from a different prior state)
+→ `agent.progress{status:"working"}`; `blocked` → `agent.question`
+(question = the hook's reason text, or a generic fallback); `idle` →
+`agent.notification{message:"task complete"}`; `ended` →
+`agent.notification{message:"session ended"}`. `error`/`stalled`/`dead`
+are read-time-only derivations (`liveState`) never written by the hook
+sink, so they're not in the mapping.
+
+External clients: `ppz subs add muster-events` + `ppz subs read` to
+tail live, or `ppz reread muster-events --json --since 1h` to replay/
+catch up without moving a cursor — no new SDK, just the `ppz` CLI
+they'd use for anything else on the mesh.
+
+vet/test/gofmt green. Live E2E over the real dev mesh (not just unit
+tests): simulated a SessionStart→PreToolUse→PermissionRequest→Stop hook
+sequence and read back `muster-events` via `ppz reread --json` —
+confirmed working→blocked→idle published exactly once each with the
+right shape, and the same-state PreToolUse re-report correctly produced
+NO extra publish.
+
+Found but NOT fixing here (pre-existing, cross-cutting, out of scope):
+`ppzCmd`'s env override only sets `PPZ_SESSION`; it doesn't clear
+`PPZ_CURRENT_HANDLE`, which "wins" per `ppz status`'s own warning
+("current source is set twice, env takes precedence") when the calling
+shell already has it set — e.g. inside an agent's own pane. Effect: a
+`muster-events` publish (or a room-pipe send) issued from inside an
+agent's pane shows that agent as the envelope `sender` instead of
+`mstrctl`. Cosmetic only — the event JSON's own `agent` field (from
+`MUSTER_AGENT`, unaffected) is what a subscriber actually keys off of,
+and delivery itself is unaffected — but worth a real fix in `ppzCmd`
+(clear/override `PPZ_CURRENT_HANDLE` too) since it likely also affects
+existing room-message attribution. Flagged to the team, not blocking.
+
+Next: ping echo (muster-voice) with the pipe name + shape now that it's
+live; no CLI subcommand added for humans to watch it (`ppz reread
+muster-events --json` already does the job — ponytail: existing tool
+covers it, skip the wrapper).
+
+### Addendum (2026-07-12 ~12:20): agent.progress tool/target enrichment
+
+Follow-on, not a reopen — chud (muster-voice, DEEP-tier voice router) hit
+real silence during a live agent turn and needed `agent.progress` to
+carry WHAT the agent is doing, not just that it's `working`, so a voice
+client can narrate ("reading auth.ts... running tests...") instead of a
+generic filler. Michael flagged the silence as unacceptable; greg
+blessed doing this before chud's separate reply-chunk question (that one
+stays design-only — see below, resolved as NOT needing any change here).
+
+Corrected chud's original premise first: muster did NOT already log tool
+name/target anywhere (`cmdHook`'s payload struct only read
+`hook_event_name`/`session_id`/`source`/`message`) — this was new work,
+not exposing something that already existed.
+
+Added: `AgentStatus.Tool`/`.Target` (status.go) populated from the raw
+Claude Code PreToolUse/PostToolUse hook JSON's `tool_name`/`tool_input`
+(previously parsed but discarded); a new `toolTarget()` helper does
+best-effort per-tool-type extraction (`file_path` for Read/Edit/Write/
+NotebookEdit, `command` for Bash, `pattern` for Grep/Glob, `url` for
+WebFetch, `query` for WebSearch, `description` for Task; `""` for
+anything unrecognized rather than guessing wrong). `AgentEvent.Tool`/
+`.Target` (events.go) carry the same, `omitempty`, `agent.progress` only.
+
+The real design change (not just plumbing): `eventForTransition`'s dedup
+gate used to fire ONLY on a state change, so a `working`→`working`
+re-report (tool 2, 3, 4... of one streak) was always suppressed —
+enrichment alone would have gone stale after the first tool call, the
+opposite of what narration needs. Widened the gate: within a `working`
+streak, also fires when `Tool` or `Target` changes vs. the previous
+write. A PreToolUse/PostToolUse pair for the SAME call still collapses
+into one event (tool+target unchanged between them) — no flood, same
+spirit as the original transition-only gate, just scoped to "did the
+thing worth narrating change" instead of "did the state change."
+
+vet/test/gofmt green; 7 new unit tests (`TestToolTarget` +
+`TestEventForTransition*`) cover: each known tool's extraction, an
+unrecognized tool, malformed/empty `tool_input`, tool-change-within-a-
+streak firing, target-change-with-same-tool firing, same-tool-same-target
+suppression (the Pre/Post collapse), and a `working`-with-no-tool-name
+re-report (`UserPromptSubmit`/`SessionStart`) staying suppressed.
+
+**Deliberately skipped a live publish-to-the-shared-pipe E2E** this time
+(unlike the original Phase 1 ship above) — `muster-events` is the same
+real pipe echo's live voice consumer may be actively tailing tonight for
+the actual demo; a synthetic test event risked getting spoken aloud
+mid-demo for no real benefit over the unit coverage. The changed surface
+is small/mechanical (two new struct fields, one new pure-function helper,
+one widened boolean gate) and thoroughly unit-tested; recommend the real
+validation be a live agent doing a real multi-tool turn once convenient,
+not a synthetic probe.
+
+Sample payload, sent to chud as the final field names (ppz id `2b80c5d2`
+pre-build, confirmed post-build separately):
+```json
+{"type":"agent.progress","agent":"planner","status":"working","tool":"Read","target":"auth.ts","ts":"..."}
+```
+
+Not fixed here either (chud's #2, reply-chunk streaming): resolved as a
+non-issue for this repo — chud confirmed (ppz, 12:18) a Claude turn only
+emits its whole text block at turn-end, so the realistic streaming path
+is the voice service itself running a headless `claude -p --stream-json`
+turn and chunking deltas client-side, same mechanism LIGHT already uses.
+No reply-chunk event type needed on `muster-events`, ever, either way —
+confirmed closed, not just deferred.
+
 ## Session 10 addendum 2: persistent mesh proxies (issue #16)
 
 Chud shipped `ppz terminal attach --embedded` (Ctrl-\ swallowed, never
