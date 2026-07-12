@@ -140,9 +140,17 @@ func eventForTransition(agent string, prev *AgentStatus, st AgentStatus) *AgentE
 			ev.Question = "needs your input"
 		}
 	case "idle":
-		ev.Type, ev.Message, ev.Priority = "agent.notification", "task complete", "normal"
+		// Routine same-fleet completions are noise for a single-user voice
+		// client: the addressed agent's own reply already conveys "done", and
+		// speaking every fleet agent's "task complete" spammed a live voice
+		// session once the producer went fleet-wide. Don't publish routine
+		// idle notifications. Proper per-client scoping (surface only the
+		// addressed agent + high/critical) is the follow-up in the consumer
+		// (muster-voice _speak_events, echo) — restore idle publishing then.
+		return nil
 	case "ended":
-		ev.Type, ev.Message, ev.Priority = "agent.notification", "session ended", "low"
+		// Same reasoning as idle; already low-priority but still fleet noise.
+		return nil
 	default:
 		return nil
 	}
