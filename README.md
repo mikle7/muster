@@ -9,14 +9,11 @@ together across repos and machines over the [ppz](https://github.com/pipescloud/
 message mesh.
 
 ```
-$ muster spawn api-fix --repo ~/code/api -b fix-auth -- claude --dangerously-skip-permissions
-$ muster spawn docs -C ~/code/docs --role "keeps the docs honest"
+$ muster spawn dave --repo ~/code/api -b auth-fix --role "fixes the auth bug"
 $ muster ls
-NAME     STATE      HARNESS  INBOX  AGE  DIR
-api-fix  ⚙ working  claude   0      2m   ~/code/api__wt/fix-auth
-docs     ✋ blocked  claude   0      1m   ~/code/docs
-$ muster send api-fix "also bump the changelog when you're done"
-$ muster cron add api-fix --every 4h "check CI on your branch, fix if red"
+NAME  STATE      HARNESS  INBOX  AGE  DIR
+dave  ⚙ working  claude   0      2m   ~/code/api__wt/auth-fix
+$ muster send dave "bump the changelog when you're done"
 ```
 
 ## What it does
