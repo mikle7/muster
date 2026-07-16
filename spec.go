@@ -251,13 +251,21 @@ func teamRoster(self string) string {
 }
 
 // muster-injected flags, recomputed at every launch — never stored in Argv.
-func injected(s *AgentSpec, hooksSettings string) []string {
+// firstLaunch gates the system-prompt briefing (team roster + conventions):
+// only the FIRST launch actually needs it — a resumed session's transcript
+// already has it, and re-embedding it every resume is pure waste that grows
+// with the team (a real one: "tmux new-session: ...: command too long" once
+// the roster got big enough, 2026-07-16).
+func injected(s *AgentSpec, hooksSettings string, firstLaunch bool) []string {
 	var extra []string
 	if skipPermissions() && !argvHas(s.Argv, "--dangerously-skip-permissions") {
 		extra = append(extra, "--dangerously-skip-permissions")
 	}
 	if hooksSettings != "" {
 		extra = append(extra, "--settings", hooksSettings)
+	}
+	if !firstLaunch {
+		return extra
 	}
 	// --no-ppz agents get no mesh briefing (nothing mesh-specific applies),
 	// but an opted-in project's conventions aren't mesh-specific and must
@@ -281,7 +289,7 @@ func composeSpawn(s *AgentSpec, hooksSettings string) []string {
 	}
 	argv := append([]string{}, s.Argv...)
 	argv = append(argv, "--session-id", s.SessionUUID)
-	return append(argv, injected(s, hooksSettings)...)
+	return append(argv, injected(s, hooksSettings, true)...)
 }
 
 // composeResume builds the argv for a faithful restart: the user's exact
@@ -292,7 +300,7 @@ func composeResume(s *AgentSpec, hooksSettings string) []string {
 	}
 	argv := append([]string{}, s.Argv...)
 	argv = append(argv, "--resume", s.SessionUUID)
-	return append(argv, injected(s, hooksSettings)...)
+	return append(argv, injected(s, hooksSettings, false)...)
 }
 
 // adoptSessionID pulls a user-supplied --session-id out of argv into the

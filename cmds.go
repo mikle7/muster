@@ -221,10 +221,22 @@ func launch(spec *AgentSpec, resume, noPpz bool, setup string) int {
 	// keep the pane alive on failure long enough to read the error
 	cmd += `; rc=$?; [ $rc -ne 0 ] && { echo; echo "muster: agent exited rc=$rc — pane closes in 60s"; sleep 60; }`
 
+	// tmux new-session's shell-command argument has its own ceiling,
+	// independent of the OS's exec argv limit — and --append-system-prompt
+	// embeds the WHOLE team roster inline, which only grows as agents get
+	// hired ("tmux new-session: ...: command too long", 2026-07-16, ~19
+	// teammates). Writing the command to a file and running THAT keeps
+	// tmux's own argument constant-size regardless of roster growth.
+	scriptPath, err := writeLaunchScript(spec.TmuxSession, cmd)
+	if err != nil {
+		return fail(err)
+	}
+	runCmd := "sh " + shQuote(scriptPath)
+
 	if spec.SessionUUID != "" {
 		clearStatus(spec.SessionUUID)
 	}
-	if err := tmuxNewSession(spec.TmuxSession, spec.Dir, cmd, env); err != nil {
+	if err := tmuxNewSession(spec.TmuxSession, spec.Dir, runCmd, env); err != nil {
 		return fail(err)
 	}
 	// no status bar in agent sessions — they render inside the muster

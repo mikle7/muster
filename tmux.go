@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -50,6 +51,32 @@ func tmuxNewSession(sess, dir, shellCmd string, env map[string]string) error {
 		return fmt.Errorf("tmux new-session: %v: %s", err, out)
 	}
 	return nil
+}
+
+// launchScriptPath is where a spec's full launch command is written instead
+// of being embedded inline in the tmux new-session argument (see
+// writeLaunchScript). Keyed by tmux session name — overwritten on every
+// spawn/resume, harmless to leave around between launches (same visibility
+// as the command already printed to the human at spawn time).
+func launchScriptPath(sessName string) string {
+	return filepath.Join(dataDir(), "launch", sessName+".sh")
+}
+
+// writeLaunchScript writes cmd to launchScriptPath(sessName) and returns
+// that path. tmux new-session's shell-command argument has its own length
+// ceiling, independent of the OS exec argv limit — and the composed launch
+// command embeds the whole team roster via --append-system-prompt, which
+// only grows as agents get hired. Running the command from a file instead
+// of inline keeps tmux's own argument a constant size regardless.
+func writeLaunchScript(sessName, cmd string) (string, error) {
+	p := launchScriptPath(sessName)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return "", err
+	}
+	if err := atomicWrite(p, []byte(cmd)); err != nil {
+		return "", err
+	}
+	return p, nil
 }
 
 func tmuxKillSession(sess string) error {

@@ -77,6 +77,27 @@ func TestComposeAddsMeshBriefingOnlyOnMesh(t *testing.T) {
 	}
 }
 
+// TestComposeResumeOmitsSystemPrompt covers the 2026-07-16 scaling bug:
+// resume used to re-embed the full team roster via --append-system-prompt
+// on every restart, growing with the team until it hit tmux's own
+// command-length ceiling ("command too long", ~19 teammates). The resumed
+// session's transcript already has whatever was injected at first launch —
+// resume shouldn't re-send it at all.
+func TestComposeResumeOmitsSystemPrompt(t *testing.T) {
+	pinState(t)
+	s := &AgentSpec{Harness: "claude", SessionUUID: "u", Argv: []string{"claude"}, PpzHandle: "w1", Name: "w1"}
+	if got := composeSpawn(s, ""); !argvHas(got, "--append-system-prompt") {
+		t.Fatalf("spawn should still carry the briefing: %v", got)
+	}
+	got := composeResume(s, "")
+	if argvHas(got, "--append-system-prompt") {
+		t.Fatalf("resume should NOT re-embed the system prompt: %v", got)
+	}
+	if !argvHas(got, "--resume") {
+		t.Fatalf("resume flag missing: %v", got)
+	}
+}
+
 func TestComposeSpawnInjectsSessionID(t *testing.T) {
 	pinState(t)
 	s := &AgentSpec{Harness: "claude", SessionUUID: "u1", Argv: []string{"claude", "-n", "worker"}}
@@ -195,7 +216,7 @@ func TestInjectedConventionsSurviveNoPpz(t *testing.T) {
 	}
 	for _, ppzHandle := range []string{"", "agent1"} {
 		s := &AgentSpec{Name: "agent1", Dir: "/repo/demo", PpzHandle: ppzHandle}
-		extra := injected(s, "")
+		extra := injected(s, "", true)
 		var prompt string
 		for i, a := range extra {
 			if a == "--append-system-prompt" && i+1 < len(extra) {
