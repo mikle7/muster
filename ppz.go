@@ -411,6 +411,20 @@ func ppzSourceExists(handle string) bool {
 	return len(ppzLs(handle+".*")) > 0
 }
 
+// offlineSourcesExist checks ppzSourceExists for every offline handle in hb
+// (online ones never need it — remoteRows only consults this map for the
+// offline case) and returns the result as a map so buildRows/remoteRows stay
+// pure/subprocess-free and testable with a fabricated map.
+func offlineSourcesExist(hb map[string]ppzHeartbeat) map[string]bool {
+	res := map[string]bool{}
+	for h, entry := range hb {
+		if entry.Status == "offline" {
+			res[h] = ppzSourceExists(h)
+		}
+	}
+	return res
+}
+
 // ppzInboxDepth returns the number of messages retained in each
 // "<handle>.inbox" — inbox depth, NOT per-agent unread. muster runs as the
 // muster-ctl session and never advances a cursor on any agent inbox

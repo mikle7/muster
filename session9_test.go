@@ -30,7 +30,7 @@ func TestBuildRowsAddsRemoteAgent(t *testing.T) {
 	hb := map[string]ppzHeartbeat{
 		"ivy": {Handle: "ivy", Status: "online", State: "working", Harness: "claude", Model: "opus", Host: "linux-desktop"},
 	}
-	rows := buildRows(nil, hb, nil)
+	rows := buildRows(nil, hb, nil, nil)
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
 	}
@@ -54,7 +54,7 @@ func TestBuildRowsSkipsLocalHandle(t *testing.T) {
 	hb := map[string]ppzHeartbeat{
 		"ivy": {Handle: "ivy", Status: "online", State: "working", Harness: "claude"},
 	}
-	rows := buildRows(specs, hb, nil)
+	rows := buildRows(specs, hb, nil, nil)
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1 (no duplicate for a locally-spawned handle): %+v", len(rows), rows)
 	}
@@ -69,7 +69,7 @@ func TestBuildRowsSkipsNonAgentsAndSelf(t *testing.T) {
 		ctlHandle:     {Handle: ctlHandle, Status: "online"}, // muster's own control handle
 		"remoteAgent": {Handle: "remoteAgent", Status: "online", Harness: "codex", State: "idle"},
 	}
-	rows := buildRows(nil, hb, nil)
+	rows := buildRows(nil, hb, nil, nil)
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1 (only the harness-bearing handle): %+v", len(rows), rows)
 	}
@@ -82,16 +82,30 @@ func TestBuildRowsOfflineRemoteIsDead(t *testing.T) {
 	hb := map[string]ppzHeartbeat{
 		"jack": {Handle: "jack", Status: "offline", State: "working", Harness: "claude"},
 	}
-	rows := buildRows(nil, hb, nil)
+	rows := buildRows(nil, hb, nil, map[string]bool{"jack": true})
 	if len(rows) != 1 || rows[0].State != "dead" {
 		t.Fatalf("got %+v, want a single dead row (offline liveness beats stale agent_state)", rows)
+	}
+}
+
+// TestBuildRowsDestroyedSourceDropped covers #4/#5: ppz's heartbeat history
+// outlives `source destroy` (it's a log, not live state), so without the
+// sourceExists check a cleared/killed-and-removed agent reappears as a
+// phantom dead row forever.
+func TestBuildRowsDestroyedSourceDropped(t *testing.T) {
+	hb := map[string]ppzHeartbeat{
+		"ghost": {Handle: "ghost", Status: "offline", State: "working", Harness: "claude"},
+	}
+	rows := buildRows(nil, hb, nil, map[string]bool{"ghost": false})
+	if len(rows) != 0 {
+		t.Fatalf("got %+v, want no rows (source destroyed, heartbeat stale)", rows)
 	}
 }
 
 func TestBuildRowsRemoteInboxDepth(t *testing.T) {
 	hb := map[string]ppzHeartbeat{"quinn": {Handle: "quinn", Status: "online", State: "idle", Harness: "claude"}}
 	inbox := map[string]int{"quinn": 3}
-	rows := buildRows(nil, hb, inbox)
+	rows := buildRows(nil, hb, inbox, nil)
 	if len(rows) != 1 || rows[0].Inbox != 3 {
 		t.Fatalf("got %+v, want inbox=3", rows)
 	}
@@ -105,7 +119,7 @@ func TestBuildRowsCarriesProject(t *testing.T) {
 	hb := map[string]ppzHeartbeat{
 		"ivy": {Handle: "ivy", Status: "online", State: "working", Harness: "claude", Project: "pixel-studios"},
 	}
-	rows := buildRows(nil, hb, nil)
+	rows := buildRows(nil, hb, nil, nil)
 	if len(rows) != 1 || rows[0].Project != "pixel-studios" {
 		t.Fatalf("got %+v, want Project=pixel-studios", rows)
 	}

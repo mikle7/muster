@@ -270,13 +270,14 @@ func gatherRows() ([]lsRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	return buildRows(specs, ppzWho(), ppzInboxDepth()), nil
+	hb := ppzWho()
+	return buildRows(specs, hb, ppzInboxDepth(), offlineSourcesExist(hb)), nil
 }
 
 // buildRows is gatherRows' pure core (no subprocess calls) so it's testable
 // with fabricated specs/heartbeats. Local rows come from specs, same as
 // always; remoteRows appends synthetic rows for mesh-only agents.
-func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, inbox map[string]int) []lsRow {
+func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, inbox map[string]int, sourceExists map[string]bool) []lsRow {
 	ours := map[string]bool{}
 	var rows []lsRow
 	for _, s := range specs {
@@ -304,7 +305,7 @@ func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, inbox map[string]
 		}
 		rows = append(rows, r)
 	}
-	return append(rows, remoteRows(hb, ours, inbox)...)
+	return append(rows, remoteRows(hb, ours, inbox, sourceExists)...)
 }
 
 // remoteRows surfaces mesh-only agents: a live ppz heartbeat with a detected
@@ -314,7 +315,7 @@ func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, inbox map[string]
 // sidebar — same "ours" distinction meshBody already draws for the M view,
 // narrowed to actual agents. Tmux/Dir/Branch/Wt stay zero: there's no local
 // process or worktree behind these rows.
-func remoteRows(hb map[string]ppzHeartbeat, ours map[string]bool, inbox map[string]int) []lsRow {
+func remoteRows(hb map[string]ppzHeartbeat, ours map[string]bool, inbox map[string]int, sourceExists map[string]bool) []lsRow {
 	handles := make([]string, 0, len(hb))
 	for h := range hb {
 		handles = append(handles, h)
@@ -332,6 +333,15 @@ func remoteRows(hb map[string]ppzHeartbeat, ours map[string]bool, inbox map[stri
 		state := hbEntry.State
 		switch {
 		case hbEntry.Status == "offline":
+			// ppz's heartbeat history outlives `source destroy` (it's a
+			// log, not live state) — without this check, a cleared mesh
+			// agent (#4) or a killed+removed local one (#5) reappears as
+			// a phantom dead row forever. sourceExists defaults true for
+			// any handle the caller didn't check (buildRows callers that
+			// pass nil/partial maps keep today's behavior).
+			if exists, checked := sourceExists[h]; checked && !exists {
+				continue
+			}
 			state = "dead"
 		case state == "":
 			state = "unknown"
@@ -505,6 +515,14 @@ func cmdKill(args []string) int {
 	}
 	if err := deleteSpec(name); err != nil {
 		return fail(err)
+	}
+	// --rm means genuinely gone, not just gone locally — otherwise the live
+	// ppz heartbeat outlives the spec and remoteRows resurrects it as a
+	// phantom mesh-only row a few seconds later (#5).
+	if s.PpzHandle != "" {
+		if err := ppzSourceDestroy(s.PpzHandle); err != nil {
+			fmt.Println("warning: local spec removed but ppz source destroy failed:", err)
+		}
 	}
 	fmt.Println("removed agent", name)
 	return 0
