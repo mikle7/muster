@@ -68,16 +68,6 @@ func projColor(proj string) lipgloss.AdaptiveColor {
 	return projColors[h%len(projColors)]
 }
 
-// markReadCmd returns a background tea.Cmd that advances mstrctl's read
-// cursor on handle's inbox so the unread badge clears after opening an agent.
-func markReadCmd(handle string) tea.Cmd {
-	h := handle
-	return func() tea.Msg {
-		ppzMarkRead(h)
-		return nil
-	}
-}
-
 func stateStyle(state string) lipgloss.Style {
 	switch state {
 	case "working":
@@ -1314,8 +1304,7 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.followMeshProxy(name, sel.State)
 		}
 		m.wp.focus()
-		// advance mstrctl's read cursor so the unread badge clears (#8)
-		return m, markReadCmd(name)
+		return m, nil
 
 	case "s":
 		if name == "" {
@@ -1574,8 +1563,7 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		popupSelf("inbox " + name)
-		// opening inbox means the user is reading it — advance cursor (#8)
-		return m, markReadCmd(name)
+		return m, nil
 
 	case "K":
 		if name == "" {
