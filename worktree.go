@@ -80,6 +80,30 @@ func copyWorktreeInclude(repo, wt string) {
 	}
 }
 
+// worktreeRepoRoot resolves dir's main repo directory when dir sits inside
+// a muster-created worktree (<repo>__wt/<branch>, from worktreeAdd above) —
+// "" otherwise. projectFor matches Repo/Dir against a registered project by
+// exact-string prefix (no symlink resolution), so this walks dir's own
+// ancestors as plain strings rather than asking git — asking git would
+// return a symlink-canonicalized path (e.g. macOS's /tmp -> /private/tmp),
+// which would then silently mismatch a project registered via the literal,
+// non-canonicalized path every other codepath here uses (filepath.Abs).
+// Needed because a sibling worktree dir never prefix-matches the registered
+// repo path on its own — spawning with `-C` into an existing worktree
+// silently landed in no project bucket (2026-07-16, found by Michael).
+func worktreeRepoRoot(dir string) string {
+	for d := filepath.Clean(dir); ; {
+		parent := filepath.Dir(d)
+		if parent == d {
+			return "" // reached filesystem root, no __wt ancestor
+		}
+		if base := filepath.Base(parent); strings.HasSuffix(base, "__wt") {
+			return filepath.Join(filepath.Dir(parent), strings.TrimSuffix(base, "__wt"))
+		}
+		d = parent
+	}
+}
+
 // liveBranch reads the branch actually checked out in dir. spec.Branch only
 // knows what spawn created — regular agents have none, and any agent can
 // switch branches mid-session; the sidebar should show what's really in that

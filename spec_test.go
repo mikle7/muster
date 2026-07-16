@@ -208,6 +208,26 @@ func TestInjectedConventionsSurviveNoPpz(t *testing.T) {
 	}
 }
 
+// TestWorktreeRepoRoot covers the 2026-07-16 project-bucketing bug: -C into
+// an existing worktree (a sibling <repo>__wt/<branch> dir by muster's own
+// convention) never resolved back to the main repo, so it silently landed
+// in no project bucket. Pure string logic (no real git repo needed) —
+// deliberately doesn't ask git, see the function's own doc comment for why.
+func TestWorktreeRepoRoot(t *testing.T) {
+	cases := map[string]string{
+		"/repos/pixel-studios__wt/foo":         "/repos/pixel-studios",
+		"/repos/pixel-studios__wt/foo/sub/dir": "/repos/pixel-studios", // -C into a subdir of the worktree
+		"/repos/pixel-studios":                 "",                     // main checkout, not a worktree
+		"/tmp/not-a-worktree-at-all":           "",
+		"/a/b__wt/c__wt/d":                     "/a/b__wt/c", // innermost __wt ancestor wins
+	}
+	for dir, want := range cases {
+		if got := worktreeRepoRoot(dir); got != want {
+			t.Errorf("worktreeRepoRoot(%q) = %q, want %q", dir, got, want)
+		}
+	}
+}
+
 func TestDetectHarness(t *testing.T) {
 	if detectHarness([]string{"/usr/local/bin/claude", "-n", "x"}) != "claude" {
 		t.Error("path-qualified claude not detected")

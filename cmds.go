@@ -101,6 +101,10 @@ func cmdSpawn(args []string) int {
 			return fail(err)
 		}
 		spec.Dir = abs
+		if repoRoot := worktreeRepoRoot(abs); repoRoot != "" {
+			spec.Repo = repoRoot
+			_, _ = addProject(repoRoot, "") // idempotent, same as the --repo/-b case
+		}
 	default:
 		spec.Dir, _ = os.Getwd()
 	}
