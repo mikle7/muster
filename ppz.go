@@ -12,8 +12,21 @@ import (
 
 // ctlSession is the PPZ_SESSION muster's own commands run under, so the
 // control handle survives across muster invocations (fresh subprocesses).
-const ctlSession = "muster-ctl"
-const ctlHandle = "mstrctl"
+// Both are overridable via env var so sandboxed/test muster instances can
+// point at a throwaway identity instead of the real shared one — ppz
+// source/pipe destroy is global, not session-scoped, so a sandboxed
+// instance exercising send/broadcast/room/schedule against the real mesh
+// otherwise touches (and can destroy) the same "mstrctl" every production
+// muster instance on the machine relies on (2026-07-16 incident).
+var ctlSession = envDefault("MUSTER_CTL_SESSION", "muster-ctl")
+var ctlHandle = envDefault("MUSTER_CTL_HANDLE", "mstrctl")
+
+func envDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
 
 func ppzBin() string {
 	if p := os.Getenv("MUSTER_PPZ"); p != "" {

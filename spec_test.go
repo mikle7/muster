@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -166,6 +167,19 @@ func TestHookEventState(t *testing.T) {
 	}
 	if got, _ := hookEventState("Notification", "Claude needs your permission to use Bash"); got != "blocked" {
 		t.Errorf(`hookEventState(Notification, permission) = %q, want "blocked"`, got)
+	}
+}
+
+func TestEnvDefault(t *testing.T) {
+	const key = "MUSTER_TEST_ENV_DEFAULT_XYZ"
+	os.Unsetenv(key)
+	if got := envDefault(key, "fallback"); got != "fallback" {
+		t.Errorf("unset: got %q, want fallback", got)
+	}
+	os.Setenv(key, "override")
+	defer os.Unsetenv(key)
+	if got := envDefault(key, "fallback"); got != "override" {
+		t.Errorf("set: got %q, want override", got)
 	}
 }
 
