@@ -34,7 +34,8 @@ func bootstrapWorkspace() int {
 	if !tmuxHasSession(wsSession) {
 		args := []string{"new-session", "-d", "-s", wsSession, "-e", "MUSTER_EMBEDDED=1"}
 		for _, k := range []string{"MUSTER_STATE_DIR", "MUSTER_TMUX_ARGS", "MUSTER_TMUX", "MUSTER_PPZ",
-			"MUSTER_DEFAULT_CMD", "MUSTER_SKIP_PERMISSIONS", "MUSTER_REPO_ROOTS", "MUSTER_NOTIFY"} {
+			"MUSTER_DEFAULT_CMD", "MUSTER_SKIP_PERMISSIONS", "MUSTER_REPO_ROOTS", "MUSTER_NOTIFY",
+			"MUSTER_STALL_MIN", "MUSTER_REFRESH_PCT", "MUSTER_PPZ_TIMEOUT_MS", "MUSTER_REFRESH_WAIT_S"} {
 			if v := os.Getenv(k); v != "" {
 				args = append(args, "-e", k+"="+v)
 			}
@@ -49,6 +50,12 @@ func bootstrapWorkspace() int {
 		_, _ = tmuxRun("set-option", "-t", "="+wsSession+":", "status", "off")
 		_, _ = tmuxRun("set-option", "-w", "-t", "="+wsSession+":", "pane-border-status", "top")
 		_, _ = tmuxRun("set-option", "-w", "-t", "="+wsSession+":", "pane-border-format", " #{pane_title} ")
+		// outer half of the nested-attach key relay — see launch()'s
+		// matching set on each agent's own tmux session for why both
+		// layers need this (modified keys like shift+tab otherwise get
+		// eaten/mangled at whichever layer doesn't opt in).
+		_, _ = tmuxRun("set-option", "-w", "-t", "="+wsSession+":", "xterm-keys", "on")
+		_, _ = tmuxRun("set-option", "-w", "-t", "="+wsSession+":", "extended-keys", "on")
 	}
 	bindRightClick()
 	if os.Getenv("TMUX") != "" {

@@ -3,7 +3,12 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-10 (session 10 — remote rows now follow via a
+**Last updated:** 2026-07-16 (round 2 — see "Round-2 sidebar audit" below
+for the full list; the one durable decision change is the working-state
+spinner overriding DESIGN.md's "spinners lie" stance, Michael's explicit
+call.)
+
+**Previously:** 2026-07-10 (session 10 — remote rows now follow via a
 persistent background mesh proxy (issue #16, pause+jump): glancing away
 and back is a cheap switch-client, same as local agents, not a fresh
 connect + scrollback replay. vet/test/gofmt green; live E2E PASSED —
@@ -920,3 +925,69 @@ user's machine — the machine-bound remainder lives in **docs/FOLLOWUP.md**
 
 Fresh candidates after that: unread-badge cursor fix (FOLLOWUP §5),
 comparative review of N attempts (PLAN backlog), stalled notifications.
+
+## Round-2 sidebar audit (2026-07-16)
+
+otto. Round-1's #2-16 batch claimed fixes that didn't hold up in real
+usage; round 2 was: reproduce each one live, fix for real, close what's
+genuinely verified. Full per-issue evidence lives in the closed github
+issues' comments, not repeated here. Real bugs found and fixed along the
+way (all live-verified, not just code-reviewed):
+
+- **#8** unread badge: superseded mid-session by Michael/chud's own
+  investigation (`docs/investigations/muster-status-display-2026-07-11.md`)
+  — the badge is now honest cursor-independent inbox depth, not
+  per-agent unread; open question (not closed) whether a real per-agent
+  "what's new" signal is still wanted.
+- **#2** state icons: `Notification` hook's idle_prompt nag vs real
+  permission-block split (hookEventState), plus a heartbeat-based
+  sticky-blocked correction (Michael/chud).
+- **#4/#5** offline/killed agents resurrecting as phantom rows: ppz's
+  `who` heartbeat log outlives `source destroy`; `remoteRows` now checks
+  source-still-exists.
+- **#9** broadcast/send: round 1's multiline fix landed on room.go's
+  chat compose, not the sidebar's actual `b`/`s` keys. Real fix: a
+  `multiline` promptSpec mode (textarea, enter-sends/ctrl-j-newline).
+- **#12** conventions_prompt: was folded inside the ppz-gated mesh
+  briefing, so `--no-ppz` silently dropped an opted-in project's
+  conventions. Decoupled.
+- **Incident**: a live-mesh verification sub-agent's cleanup destroyed
+  the real production `mstrctl` ppz identity (real message-history loss,
+  self-healed identity). Prevention: `MUSTER_CTL_SESSION`/
+  `MUSTER_CTL_HANDLE` env overrides (ppz.go) — any future sandboxed
+  testing of send/broadcast/room/schedule/spawn-with-ppz MUST set both to
+  a throwaway value.
+- **Worktree bucketing**: `-C` into an existing worktree never set
+  `spec.Repo`, so it silently landed in no project bucket (muster's own
+  `<repo>__wt/<branch>` sibling convention can't prefix-match otherwise).
+  `worktreeRepoRoot` derives it via plain string manipulation of that
+  convention — deliberately NOT via `git rev-parse` (which returns a
+  symlink-canonicalized path that would mismatch a project registered via
+  the literal `filepath.Abs` path every other codepath here uses).
+- **"tmux new-session: command too long"** at ~19 teammates: two causes.
+  `injected()` re-embedded the full team roster on every RESUME too (pure
+  waste — the transcript already has it; now gated on a `firstLaunch`
+  flag). Root cause is tmux new-session's own shell-command argument
+  ceiling, well below the OS's exec() argv limit (proved directly: the
+  same big string reaches the real claude process's actual argv fine
+  once tmux is out of the path) — `launch()` now writes the composed
+  command to a file (`dataDir()/launch/<session>.sh`) and runs `sh
+  <path>` instead of embedding it inline, fixing spawn too, not just
+  resume.
+- **Sidebar polish** (Michael, after checking the code himself — these
+  were the actual reason otto was brought back, not the two bugs above,
+  which were real but crowded them out): blocked and stalled now have
+  genuinely distinct colors (`cBlocked`/`cStalled`) instead of sharing
+  one, and blocked is bold — Michael wants it "very visible". The
+  selected row's glyph now keeps its state color instead of losing it to
+  a flat `sSelected` style (the one row you're actually looking at was
+  the one row with no state info). `extended-keys`/`xterm-keys` turned
+  on at both tmux layers (workspace session + each agent's own session)
+  so modified keys like shift+tab survive the nested attach. **Decision
+  override**: the working state now has a real per-frame spinner
+  (`animatedGlyph`/`workingSpinner`, ~150ms tick) — this directly
+  contradicts session 7's "spinners lie" call above; Michael's explicit
+  override for the working glyph specifically, his call stands regardless
+  of that stance. The `stalled` derived-state honesty check underneath
+  is unchanged and still the real "is it actually stuck" signal — the
+  spinner is a liveliness cue layered on top, not a replacement for it.

@@ -243,6 +243,13 @@ func launch(spec *AgentSpec, resume, noPpz bool, setup string) int {
 	// workspace pane, where a second bar is just noise. (=name: — bare
 	// =name is rejected by set-option, same gotcha as send-keys.)
 	_, _ = tmuxRun("set-option", "-t", "="+spec.TmuxSession+":", "status", "off")
+	// modified keys (shift+tab and friends) need both layers of the nested
+	// attach (workspace tmux -> this agent's own tmux) to opt into extended
+	// reporting, or they get eaten/mangled at whichever layer doesn't know
+	// about them. bootstrapWorkspace sets the outer session; this is the
+	// inner one.
+	_, _ = tmuxRun("set-option", "-w", "-t", "="+spec.TmuxSession+":", "xterm-keys", "on")
+	_, _ = tmuxRun("set-option", "-w", "-t", "="+spec.TmuxSession+":", "extended-keys", "on")
 	if err := saveSpec(spec); err != nil {
 		_ = tmuxKillSession(spec.TmuxSession)
 		return fail(err)

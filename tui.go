@@ -25,7 +25,13 @@ const sidebarW = 38
 
 var (
 	cWorking = lipgloss.AdaptiveColor{Light: "166", Dark: "214"}
-	cBlocked = lipgloss.AdaptiveColor{Light: "160", Dark: "203"}
+	// blocked needs your input NOW — Michael wants it "very visible", a
+	// distinct alarm red (bold too, see stateStyle) rather than the
+	// muted pink it used to share with stalled.
+	cBlocked = lipgloss.AdaptiveColor{Light: "124", Dark: "196"}
+	// stalled is a weaker signal (a working agent that's gone quiet, not
+	// definitely stuck) — an amber caution color, distinct from blocked.
+	cStalled = lipgloss.AdaptiveColor{Light: "136", Dark: "220"}
 	cIdle    = lipgloss.AdaptiveColor{Light: "28", Dark: "78"}
 	cDead    = lipgloss.AdaptiveColor{Light: "244", Dark: "242"}
 	cAccent  = lipgloss.AdaptiveColor{Light: "61", Dark: "141"}
@@ -73,8 +79,10 @@ func stateStyle(state string) lipgloss.Style {
 	switch state {
 	case "working":
 		return lipgloss.NewStyle().Foreground(cWorking)
-	case "blocked", "stalled":
-		return lipgloss.NewStyle().Foreground(cBlocked)
+	case "blocked":
+		return lipgloss.NewStyle().Foreground(cBlocked).Bold(true)
+	case "stalled":
+		return lipgloss.NewStyle().Foreground(cStalled)
 	case "idle":
 		return lipgloss.NewStyle().Foreground(cIdle)
 	}
@@ -90,6 +98,11 @@ type tickMsg struct {
 	mesh     bool
 	seq      int
 }
+
+// animTickMsg drives the working-state spinner only — deliberately
+// separate from tickMsg (data refresh) so animating doesn't cost a ppz/
+// tmux subprocess round trip every frame.
+type animTickMsg struct{}
 type execDoneMsg struct {
 	label string
 	out   string
@@ -155,6 +168,28 @@ func runSelf(label string, argv ...string) tea.Cmd {
 
 func tickEvery() tea.Cmd {
 	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tickMsg{seq: -1} })
+}
+
+// animTick paces the working-state spinner. A real signal for "is this
+// agent actually stuck" already exists (derived `stalled` state, docs/
+// DESIGN.md session 7's "spinners lie" call) — this is purely a
+// liveliness cue on top of that, Michael's explicit override of the
+// doc's stance for the working glyph specifically.
+func animTick() tea.Cmd {
+	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg { return animTickMsg{} })
+}
+
+var workingSpinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// animatedGlyph is stateGlyph for the interactive sidebar: identical for
+// every state except "working", which cycles through workingSpinner. The
+// non-interactive CLI (`muster ls`) has no frame concept and keeps using
+// the plain stateGlyph.
+func animatedGlyph(state string, frame int) string {
+	if state == "working" {
+		return workingSpinner[frame%len(workingSpinner)]
+	}
+	return stateGlyph(state)
 }
 
 // ---- sidebar items ----------------------------------------------------------
@@ -438,6 +473,7 @@ type tuiModel struct {
 	refreshingAt  time.Time // non-zero while a refresh is in flight
 	pendingSelect string
 	quitKill      bool
+	animFrame     int // working-state spinner frame, driven by animTickMsg
 }
 
 func newTUI() tuiModel {
@@ -453,7 +489,7 @@ func newTUI() tuiModel {
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	return tea.Batch(refreshCmd(0), tickEvery())
+	return tea.Batch(refreshCmd(0), tickEvery(), animTick())
 }
 
 // spaceProject names the registered project matching the current space.
@@ -784,6 +820,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(rebuildCmd, meshCmd())
 		}
 		return m, rebuildCmd
+
+	case animTickMsg:
+		m.animFrame++
+		return m, animTick()
 
 	case meshMsg:
 		if m.mode == "mesh" {
@@ -1982,7 +2022,7 @@ func (m tuiModel) renderItem(i int) string {
 	// idle + non-empty inbox → show as "has messages" rather than plain idle
 	// (#2). NB: Inbox is retained depth, not per-agent unread (see
 	// ppzInboxDepth), so this fires for any idle agent with inbox history.
-	glyph := stateGlyph(r.State)
+	glyph := animatedGlyph(r.State, m.animFrame)
 	if r.State == "idle" && r.Inbox > 0 {
 		glyph = "→"
 	}
@@ -2008,9 +2048,16 @@ func (m tuiModel) renderItem(i int) string {
 	}
 	right := strings.TrimSpace(strings.Join([]string{ext, inbox, ctx, r.Age}, " "))
 	rightW := w - indent - 1 - 1 - nameW - 1 // indent + glyph + sp + name + sp
-	body := fmt.Sprintf("%*s%s %-*s %*s", indent, "", glyph, nameW, name, rightW, right)
 	if r.Name == m.selName {
-		return sSelected.Render(clip(body, w))
+		// selected still needs to read its state at a glance — a flat
+		// sSelected.Render() on the whole row drops stateStyle() entirely,
+		// so the one row you're actually looking at loses it (found by
+		// Michael). Glyph keeps its state color on the selected background;
+		// rest of the row stays the flat selected look.
+		glyphStyle := sSelected.Foreground(stateStyle(r.State).GetForeground())
+		line := strings.Repeat(" ", indent) + glyphStyle.Render(glyph) + " " +
+			sSelected.Render(fmt.Sprintf("%-*s %*s", nameW, name, rightW, right))
+		return line
 	}
 	line := strings.Repeat(" ", indent) + stateStyle(r.State).Render(glyph) + " " + fmt.Sprintf("%-*s ", nameW, name)
 	rightStyle := sDim
@@ -2039,7 +2086,7 @@ func (m tuiModel) viewDetail() string {
 	if r.Age != "" {
 		ageSuffix = " · " + r.Age
 	}
-	l1 := " " + stateStyle(r.State).Bold(true).Render(stateGlyph(r.State)+" "+clip(r.Name, 18)) +
+	l1 := " " + stateStyle(r.State).Bold(true).Render(animatedGlyph(r.State, m.animFrame)+" "+clip(r.Name, 18)) +
 		sDim.Render("  "+r.State+ageSuffix)
 	var l2 string
 	switch {
