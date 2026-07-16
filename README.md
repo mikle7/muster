@@ -18,6 +18,23 @@ $ muster send dave "bump the changelog when you're done"
 
 ## What it does
 
+- **Task-first dispatch.** Press `;`, type the task, hit enter — muster
+  routes it: to an idle specialist on a fresh seeded context, to a warm
+  spare that takes it instantly, to a new hire when the pool has room, or
+  to the ephemeral **ask lane** (a trailing `?` does that automatically).
+  Inline tokens steer it when the defaults are wrong
+  (`@backend !sonnet /triage-logs #proj`), and an epic — a header plus
+  `- ` bullets — fans out across several agents in one keystroke. A live
+  preview shows exactly what enter will do, before it does it.
+- **Asks: answers in minutes, not meetings.** `muster ask --skill
+  live-triage "user 4821 can't get in?"` fires a fresh-context,
+  skill-armed one-shot with no mesh identity — it can't get pulled into
+  team chatter — and lands the answer as a desktop notification plus an
+  ⚡ row whose answer fills the right pane.
+- **Role templates + pools.** `muster template add backend --role …
+  --model sonnet --warm` makes "another backend" one keystroke
+  (auto-numbered), seeds every member with the project primer + the
+  team's accumulated lessons, and keeps a pre-booted spare waiting.
 - **Real tmux sessions, not a wrapper.** Every agent is a normal tmux
   session — your config, copy-mode, plugins, and `ssh … tmux attach` all
   work on it unmodified. muster never owns a PTY and never renders
@@ -44,7 +61,10 @@ $ muster send dave "bump the changelog when you're done"
 - **Context management.** `muster refresh <name>` flushes the agent's
   handoff notes, runs `/clear`, and re-injects them — a scripted way to
   reset context without losing continuity. It can also fire automatically
-  once an agent crosses a context-usage threshold while idle.
+  once an agent crosses a context-usage threshold while idle. For a NEW
+  task, `muster retask <name>` (sidebar `F`) clears and re-seeds with the
+  project primer instead — and `muster model <name> opus` switches the
+  model without touching how the agent was launched.
 - **A team, not a pile of terminals.** Give each agent a name and a role;
   every agent's briefing includes its own role and the current roster, so
   agents can message each other by name (`ppz send alice '…'`), and

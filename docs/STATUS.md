@@ -3,10 +3,94 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-16 (round 2 — see "Round-2 sidebar audit" below
-for the full list; the one durable decision change is the working-state
-spinner overriding DESIGN.md's "spinners lie" stance, Michael's explicit
-call.)
+**Last updated:** 2026-07-16 (session 12 — task-first dispatch, see below.
+Same-day earlier: round 2 — see "Round-2 sidebar audit"; the one durable
+decision change there is the working-state spinner overriding DESIGN.md's
+"spinners lie" stance, Michael's explicit call.)
+
+## Session 12: task-first dispatch, context packs, the ask lane
+
+Branch `claude/muster-workflow-context-13xlha` (PR #19), plus ppz PR #4.
+Design doc: docs/proposals/fast-dispatch-2026-07-16.md (written first,
+then built in full the same day on Michael's go). The premise: muster's
+unit of interaction was the agent; Michael's unit of thought is the task —
+hence the master-agent dispatcher bottleneck, the herdr returns for
+fresh-context starts, and the 40-minute live-ops incident. What shipped:
+
+- **`;` dispatch palette** (palette.go, `muster palette` in a
+  display-popup): task text first, inline routing tokens (@agent/
+  @template/@ask, !model, /skill, #proj), trailing `?` → ask lane,
+  header + `- ` bullets fan an epic out with token inheritance. The live
+  preview calls the SAME resolveDispatch the executor runs. `[task]`
+  button + project right-click "dispatch a task…" reach it by mouse.
+- **Deterministic dispatch** (dispatch.go): idle agent → retask (fresh
+  seeded context); busy → queue (mesh send, or typed — runs after its
+  turn); template pool → warm-spare claim → freshest-idle retask → grow
+  under cap → LOUD refusal. Never an LLM, never silent queueing.
+- **`muster retask` / `F`** (retask.go): the missing verb between
+  refresh (same task) and kill+spawn. Waits idle if needed, rotates the
+  handoff to .prev, /clear, injects primer+lessons INSTEAD of handoff
+  (retask marker consumed by the hook), optional --model switch, types
+  the new task.
+- **Context packs** (packs.go): committed `.muster/primer.md` with
+  role-focused `## <template>` sections + `muster lesson add` append-only
+  per-project caveats. In the spawn system prompt (survives /clear) and
+  topped up via SessionStart (lessons grow after spawn).
+- **The ask lane** (ask.go): `muster ask --skill live-triage "user 4821
+  can't get in?"` → mesh-less `claude -p` one-shot (sonnet default,
+  config ask_model) in a visible mstr-ask-<id> pane; answer captured
+  from --output-format json, desktop notification, pane auto-reaps
+  (errors keep it), ASKS sidebar section, enter/right-pane shows the
+  Q&A, `u` counts unread answers as needs-you. No handle, no room, no
+  roster: it structurally cannot be pulled into the committee that
+  burned 40 minutes.
+- **Templates/pools/spares** (template.go): role+model+skills+project+
+  cap+warm bundles; `spawn --as backend` auto-numbers; warm templates
+  keep one booted+primed spare (TUI tick, in-flight marker); claiming
+  types the task instantly and backfills in the background.
+- **spec.Model** (spec.go): --model adopted out of Argv like
+  --session-id, composed at every launch/resume; `muster model <name>
+  [alias]` (live /model + spec) + `m` menu. Faithful-resume tests
+  extended, not weakened.
+- **SessionStart source=startup → idle** (status.go): a fresh claude at
+  its prompt IS idle — the signal spares are claimable on; clear/resume
+  keep reporting working (mid-flow). Events pipe unaffected (idle
+  publishes nothing).
+- **Speed**: launch's ppz block parallelized (room ensure+subscribe ∥
+  source-exists); dispatch spawns write pending markers → instant
+  `·boot` spinner rows; `deliver` types briefs when the SessionStart
+  hook lands (no blind sleeps); optimistic row + immediate post-palette
+  refresh.
+- **ppz PR #4** (additive): heartbeat `specialty` from
+  PPZ_AGENT_SPECIALTY (muster stamps the template), `ppz who
+  --specialty/--free` bench filters; muster reads specialty back into
+  remote rows' Template.
+
+vet/test/gofmt green both repos; 19 new unit tests (session12_test.go) +
+ppz who_specialty_test.go. Headless E2E on a scratch server with a stub
+claude: template spawn composed the full seeded briefing (verbatim Argv
+untouched), dispatch dry-run fanned an epic correctly, a real ask
+round-tripped question→JSON answer→answers list→sidebar ✓ row→right-pane
+Q&A, warm spare auto-spawned from the TUI tick with the `·warm` tag,
+`muster model` flipped spec+live, spawn form's template selector and the
+palette's live preview render correctly.
+
+### Session 12 open items for live dogfood
+
+- The palette blocks the TUI while open (same display-popup pattern as
+  recap/inbox — fine there, worth feeling out on a real fleet).
+- Real-claude checks: does a warm spare actually report idle via
+  SessionStart(startup) hooks (new mapping); retask's /clear + /model
+  sequencing against live autocomplete; ask -p skill expansion against
+  the real live-triage skills; notification UX on answer.
+- Dispatch send-fallback types into a BUSY agent's input box when off-
+  mesh (queues until its turn ends) — verify the feel; mesh path nudges
+  on idle as before.
+- Cross-machine dispatch (ppz --free/--specialty) is plumbing-ready but
+  NOT wired into resolveDispatch — local-only routing for now, by
+  design; wire it once single-machine dispatch has bedded in.
+- `muster template` has no TUI editor (JSON + CLI only) — deliberate;
+  revisit if templates churn more than expected.
 
 **Previously:** 2026-07-10 (session 10 — remote rows now follow via a
 persistent background mesh proxy (issue #16, pause+jump): glancing away

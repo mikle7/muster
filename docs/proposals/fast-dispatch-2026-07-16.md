@@ -2,9 +2,15 @@
 
 > Written 2026-07-16 from Michael's dogfood feedback (below), a full code
 > review of the spawn/refresh/briefing paths, a capability check against
-> current Claude Code docs, and a sweep of ppz's extension seams. Nothing
-> here is built yet — this is the design conversation, PLAN.md-ready if
-> accepted. Companion evidence: docs/RESEARCH.md, docs/COMPETITORS.md.
+> current Claude Code docs, and a sweep of ppz's extension seams.
+> **STATUS: BUILT same day** (Michael: "build all of it") — see STATUS.md
+> "Session 12" for what shipped and the deviations: the repurpose verb is
+> named `retask` (not `fresh`); questions rank the ask lane above every
+> implicit route; warm spares claim without a /clear (they're already
+> fresh); fork-seeding (P6 phase-3) stays unbuilt pending a live
+> `--fork-session` probe; cross-machine dispatch is plumbing-ready (ppz
+> PR #4) but deliberately not wired into routing yet.
+> Companion evidence: docs/RESEARCH.md, docs/COMPETITORS.md.
 
 ## 0. The feedback, distilled
 

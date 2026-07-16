@@ -20,6 +20,10 @@ Design rules, in priority order:
 
 | key | action | scope |
 |-----|--------|-------|
+| ; | **dispatch palette** — type the task first, route it inline: `@agent`/`@template`/`@ask` `!model` `/skill` `#proj`; a trailing `?` takes the ask lane; `- ` bullets under a header fan an epic out to several agents. Live preview shows exactly what enter will do | fleet |
+| F | retask selected agent: /clear + primer + NEW task (the palette opens locked onto it) | selected |
+| A | answers — recent asks popup | fleet |
+| m | model menu: opus/sonnet/haiku (live /model + spec for resume; `muster model` for anything else) | selected |
 | j / k, ↓ / ↑ | select next/previous agent | selection |
 | 1–9 | jump to Nth agent in the list | selection |
 | u | jump to whoever needs you most: blocked → stalled → unread | selection |
@@ -99,6 +103,22 @@ no longer closes the room — only esc/ctrl-c do.
 | ↑/↓, wheel, pgup/pgdn | scroll history (auto-follows tail until you scroll up) |
 | esc | clear the draft, or close if the draft is already empty |
 | ctrl-c | close (or just select an agent in the sidebar) |
+
+## Ask rows (the ⚡ asks section, above the projects)
+
+An ask is a question with a countdown, not a teammate: mesh-less,
+fresh-context, skill-armed `claude -p` one-shots (`muster ask`, or any
+palette line that resolves to the ask lane). While running, selecting one
+shows its live pane (watch it think); once answered, selecting it fills
+the right pane with the Q&A.
+
+| key | action |
+|-----|--------|
+| enter / l | running: focus its pane · done: answer popup |
+| K | dismiss (kills the pane first if still running) |
+| u | jumps here too — an unread answer counts as "needs you" |
+
+Everything else (s/f/w/D/c/i/v/…) is agent-only and says so.
 
 ## Candidate future keys (unassigned, deliberately)
 

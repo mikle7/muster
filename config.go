@@ -18,6 +18,8 @@ type Config struct {
 	RepoDepth       int      `json:"repo_depth,omitempty"`       // picker scan depth, default 3
 	StallAfterMin   *int     `json:"stall_after_min,omitempty"`  // "working" with no hook events for this long = stalled (0 disables, default 10)
 	RefreshCtxPct   *int     `json:"refresh_ctx_pct,omitempty"`  // auto context-refresh when idle past this ctx% (0 disables, default 75)
+	AskModel        string   `json:"ask_model,omitempty"`        // ask-lane default model (default sonnet — speed is the point)
+	AskKeepPane     *bool    `json:"ask_keep_pane,omitempty"`    // keep ask panes after the answer (default false: auto-reap)
 }
 
 func configPath() string { return filepath.Join(dataDir(), "config.json") }

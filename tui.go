@@ -182,11 +182,11 @@ func animTick() tea.Cmd {
 var workingSpinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // animatedGlyph is stateGlyph for the interactive sidebar: identical for
-// every state except "working", which cycles through workingSpinner. The
-// non-interactive CLI (`muster ls`) has no frame concept and keeps using
-// the plain stateGlyph.
+// every state except "working" (and "pending" — a spawn mid-boot), which
+// cycle through workingSpinner. The non-interactive CLI (`muster ls`) has
+// no frame concept and keeps using the plain stateGlyph.
 func animatedGlyph(state string, frame int) string {
-	if state == "working" {
+	if state == "working" || state == "pending" {
 		return workingSpinner[frame%len(workingSpinner)]
 	}
 	return stateGlyph(state)
@@ -195,10 +195,10 @@ func animatedGlyph(state string, frame int) string {
 // ---- sidebar items ----------------------------------------------------------
 
 type sideItem struct {
-	kind     string // "proj" | "agent" | "sub" (agent's branch line)
+	kind     string // "proj" | "agent" | "sub" (agent's branch line) | "askhdr"
 	projName string // proj: display name ("" = unassigned bucket)
 	projPath string
-	row      lsRow // agent + sub
+	row      lsRow // agent + sub (ask rows are kind "agent" with row.Ask set)
 }
 
 // withSub appends the agent item and, when it has a branch, a dim ⎇ sub-line
@@ -224,7 +224,7 @@ func stateRank(state string) int {
 		return 0
 	case "stalled":
 		return 1
-	case "working":
+	case "working", "pending":
 		return 2
 	case "idle":
 		return 3
@@ -244,7 +244,7 @@ func filterRows(rows []lsRow, q string) []lsRow {
 	}
 	var out []lsRow
 	for _, r := range rows {
-		hay := strings.ToLower(r.Name + " " + r.Role + " " + r.State + " " + r.Branch + " " + r.Dir)
+		hay := strings.ToLower(r.Name + " " + r.Role + " " + r.State + " " + r.Branch + " " + r.Dir + " " + r.Question + " " + r.Template)
 		if strings.Contains(hay, q) {
 			out = append(out, r)
 		}
@@ -269,7 +269,20 @@ func buildPriorityItems(rows []lsRow) []sideItem {
 	return items
 }
 
+// splitAsks pulls ask-lane rows out for their own sidebar section.
+func splitAsks(rows []lsRow) (asks, rest []lsRow) {
+	for _, r := range rows {
+		if r.Ask {
+			asks = append(asks, r)
+		} else {
+			rest = append(rest, r)
+		}
+	}
+	return
+}
+
 func buildItems(rows []lsRow, projects []Project, space string) []sideItem {
+	asks, rows := splitAsks(rows)
 	byProj := map[string][]lsRow{}
 	for _, r := range rows {
 		p := projectFor(projects, r)
@@ -289,6 +302,14 @@ func buildItems(rows []lsRow, projects []Project, space string) []sideItem {
 	}
 	projects = ordered
 	var items []sideItem
+	// live/recent asks float above everything: they're the "waiting on an
+	// answer" glance, and they're gone again within a day
+	if len(asks) > 0 {
+		items = append(items, sideItem{kind: "askhdr"})
+		for _, r := range asks {
+			items = append(items, sideItem{kind: "agent", row: r})
+		}
+	}
 	for _, p := range projects {
 		items = append(items, sideItem{kind: "proj", projName: p.Name, projPath: p.Path})
 		for _, r := range byProj[p.Name] {
@@ -357,17 +378,25 @@ func newSpawnForm(projects []Project, preselect, branch string) *uiForm {
 			ix = i + 1
 		}
 	}
+	tsel := []string{"(blank)"}
+	for _, t := range loadTemplates() {
+		tsel = append(tsel, t.Name)
+	}
 	f := &uiForm{kind: "spawn", title: "new agent", fields: []ffield{
-		textField("name", "e.g. alice", "lowercase, digits, dashes"),
+		{label: "template", sel: tsel, hint: "←/→ · fills role/model/project; name auto-numbers"},
+		textField("name", "e.g. alice (blank = auto)", "lowercase, digits, dashes"),
 		textField("role", "e.g. reviews every PR", "their charter — teammates learn it"),
 		{label: "project", sel: sel, selIx: ix, hint: "←/→ to change"},
 		textField("branch", "(optional)", "creates a git worktree for it"),
 		textField("command", "claude (default)", "the agent's exact command"),
 	}}
 	if branch != "" {
-		f.fields[3].ti.SetValue(branch)
+		f.fields[4].ti.SetValue(branch)
 	}
 	f.setFocus(0)
+	if len(tsel) == 1 {
+		f.setFocus(1) // no templates yet — start on name like before
+	}
 	return f
 }
 
@@ -597,6 +626,20 @@ func (m *tuiModel) retarget() tea.Cmd {
 		m.wp.retarget("", "", "")
 		return nil
 	}
+	if r.Ask {
+		// running ask: its pane is a real session, watch it live. Finished
+		// (pane reaped): the answer itself fills the right pane.
+		if tmuxHasSession(r.Tmux) {
+			m.wp.retarget(r.Name, r.Tmux, "working")
+		} else {
+			m.wp.showAnswer(r.Name)
+		}
+		return nil
+	}
+	if r.Pending {
+		m.wp.showPending(r.Name)
+		return nil
+	}
 	sess := r.Tmux
 	if r.Remote && r.State != "dead" {
 		if proxy := meshProxySession(r.Name); tmuxHasSession(proxy) {
@@ -816,7 +859,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		rebuildCmd := m.rebuild()
 		m.maybeAutoRefresh()
 		m.reapMeshProxies()
-		if m.mode == "mesh" { // keep the mesh view live (standup replies etc.)
+		maybeWarmSpares(m.rows) // keep one booted spare per warm template
+		if m.mode == "mesh" {   // keep the mesh view live (standup replies etc.)
 			return m, tea.Batch(rebuildCmd, meshCmd())
 		}
 		return m, rebuildCmd
@@ -955,6 +999,10 @@ func (m tuiModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// buttons
 	if msg.Y == m.btnY() {
 		switch hitButton(msg.X) {
+		case "task":
+			m.openPalette("")
+			m.seq++
+			return m, refreshCmd(m.seq)
 		case "agent":
 			m.form = newSpawnForm(m.projects, m.spawnPreselect(), "")
 			m.mode = "form"
@@ -1036,6 +1084,8 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					"", "", "")
 			}
 			menu = append(menu,
+				"new task (fresh ctx)…", "F", self+"F",
+				"model…", "m", self+"m",
 				"recap", "e", self+"e",
 				"refresh context…", "f", self+"f",
 				"send message…", "s", self+"s",
@@ -1060,6 +1110,7 @@ func (m tuiModel) rightClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			title = "workspace"
 		}
 		menu := []string{"display-menu", "-T", " " + title + " ", "-x", mx, "-y", my,
+			"dispatch a task…", ";", self + `";"`,
 			"new agent…", "a", self + "F6",
 			"new worktree agent…", "w", self + "F7"}
 		if it.projName != "" {
@@ -1289,10 +1340,19 @@ func (m tuiModel) submitForm() (tea.Model, tea.Cmd) {
 	f := m.form
 	switch f.kind {
 	case "spawn":
-		name, role, branch, cmdline := f.val(0), f.val(1), f.val(3), f.val(4)
+		tmpl := ""
+		if f.fields[0].selIx > 0 {
+			tmpl = f.val(0)
+		}
+		name, role, branch, cmdline := f.val(1), f.val(2), f.val(4), f.val(5)
 		projPath := ""
-		if ix := f.fields[2].selIx; ix > 0 {
+		if ix := f.fields[3].selIx; ix > 0 {
 			projPath = m.projects[ix-1].Path
+		}
+		if name == "" && tmpl != "" {
+			// template auto-numbers (backend-1, backend-2, …)
+			specs, _ := listSpecs()
+			name = poolName(tmpl, specs)
 		}
 		if err := validName(name); err != nil {
 			m.status, m.statErr = err.Error(), true
@@ -1303,6 +1363,9 @@ func (m tuiModel) submitForm() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		argv := []string{"spawn", name}
+		if tmpl != "" {
+			argv = append(argv, "--as", tmpl)
+		}
 		if role != "" {
 			argv = append(argv, "--role", role)
 		}
@@ -1339,11 +1402,31 @@ func (m *tuiModel) openPrompt(p promptSpec) {
 	m.input.Focus()
 }
 
+// openPalette pops the full-width dispatch palette (palette.go) over the
+// workspace — target locks every typed task onto one agent (the F retask
+// flow); "" is free dispatch.
+func (m *tuiModel) openPalette(target string) {
+	args := ""
+	if target != "" {
+		args = " --target " + target
+	}
+	_, _ = tmuxRun("display-popup", "-E", "-w", "90%", "-h", "45%",
+		shQuote(selfExe())+" palette"+args)
+}
+
 func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	sel := m.selected()
 	name := ""
 	if sel != nil {
 		name = sel.Name
+	}
+	// ask rows are one-shots, not teammates — agent verbs don't apply
+	if sel != nil && sel.Ask {
+		switch msg.String() {
+		case "s", "w", "D", "f", "F", "c", "i", "v", "V", "r", "t", "m", "e":
+			m.status, m.statErr = "that's an ask (one-shot) — enter views it, K dismisses", false
+			return m, nil
+		}
 	}
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -1375,8 +1458,55 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
+	case ";": // the dispatch palette: type the task first, route it after
+		m.openPalette("")
+		m.seq++
+		return m, refreshCmd(m.seq) // pick up asks/pending the moment it closes
+
+	case "F": // retask: fresh seeded context + a NEW task for this agent
+		if sel == nil || sel.Ask || sel.Remote {
+			m.status, m.statErr = "select a local agent to retask (or ; to dispatch anywhere)", true
+			return m, nil
+		}
+		if sel.State == "dead" {
+			m.status, m.statErr = name+" is dead — r resumes it first", true
+			return m, nil
+		}
+		if sel.Harness != "claude" {
+			m.status, m.statErr = name+" isn't a claude agent — nothing to /clear", true
+			return m, nil
+		}
+		m.openPalette(name)
+		m.seq++
+		return m, refreshCmd(m.seq)
+
+	case "A": // recent asks + answers, full-width
+		popupSelf("answers")
+		return m, nil
+
+	case "m": // switch the agent's model — live /model + spec for resume
+		if sel == nil || sel.Remote || sel.Ask || sel.Harness != "claude" {
+			m.status, m.statErr = "select a local claude agent to set a model on", true
+			return m, nil
+		}
+		menu := []string{"display-menu", "-T", " model: " + name + " ", "-x", "C", "-y", "C"}
+		for _, alias := range []string{"opus", "sonnet", "haiku"} {
+			menu = append(menu, alias, alias[:1],
+				fmt.Sprintf("run-shell '%s model %s %s'", selfExe(), name, alias))
+		}
+		_, _ = tmuxRun(menu...)
+		return m, nil
+
 	case "enter", "l", "tab":
 		if sel == nil {
+			return m, nil
+		}
+		if sel.Ask {
+			if sel.State == "working" && tmuxHasSession(sel.Tmux) {
+				m.wp.focus() // watch it think
+				return m, nil
+			}
+			popupSelf("answer " + name)
 			return m, nil
 		}
 		if sel.State == "dead" {
@@ -1444,17 +1574,21 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Focus()
 		return m, nil
 
-	case "u": // jump to whoever needs you most: blocked > stalled > unread
+	case "u": // jump to whoever needs you most: blocked > stalled > unread answer/mail
 		ring := m.agentIdxs()
 		best, bestKey := -1, 99
 		for _, idx := range ring {
 			r := m.items[idx].row
 			key := stateRank(r.State)
 			if key > 1 {
-				if r.Inbox == 0 || r.State == "dead" {
+				switch {
+				case r.Ask && r.State == "idle":
+					key = 2 // an answered ask is waiting to be read
+				case r.Inbox == 0 || r.State == "dead":
 					continue
+				default:
+					key = 2
 				}
-				key = 2
 			}
 			if key < bestKey {
 				bestKey, best = key, idx
@@ -1660,6 +1794,23 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if name == "" {
 			return m, nil
 		}
+		if sel.Ask {
+			n := name
+			verb := "dismiss"
+			if sel.State == "working" {
+				verb = "kill + dismiss"
+			}
+			m.openPrompt(promptSpec{
+				label: verb + " ask " + n, placeholder: "y to " + verb + " (answer JSON stays on disk)",
+				argv: func(t string) []string {
+					if !strings.HasPrefix(t, "y") {
+						return []string{"ls"}
+					}
+					return []string{"ask-rm", n}
+				},
+			})
+			return m, nil
+		}
 		if sel.Remote {
 			if sel.State != "dead" {
 				m.status, m.statErr = name+" is a remote mesh agent — use X to clear offline ones", true
@@ -1733,12 +1884,21 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 const helpText = `sidebar
+ ;        DISPATCH — type a task, it
+          routes: @agent/@template/@ask
+          !model /skill #proj · "- "
+          bullets fan an epic out
+ F        retask selected: /clear +
+          primer + NEW task (fresh ctx)
+ A        answers — recent asks
+ m        model: opus/sonnet/haiku
  j/k ↑/↓  select agent   1-9 jump
  u        jump to who needs you
  /        filter fleet (esc clears)
  enter/l  type into the agent →
+          (on an ask: view the answer)
  e        recap: events, git, inbox
- f        fresh context (handoff→/clear)
+ f        refresh ctx (handoff→/clear)
  a / S    spawn (form)  P add project
  t        terminal in agent/space dir
  v        file menu (v then 1-9)
@@ -1753,6 +1913,7 @@ const helpText = `sidebar
  T        standup — all agents report
  M        pipes: team, messages, setup
  K        kill (keep spec for resume)
+          (on an ask: dismiss)
  X        kill+remove (wipe spec too)
  r / R    resume sel / all
  i        inbox   c add schedule
@@ -2018,7 +2179,13 @@ func (m tuiModel) renderItem(i int) string {
 		}
 		return sDim.Render(body)
 	}
+	if it.kind == "askhdr" {
+		return sDim.Render("▍asks") + sDim.Render(strings.Repeat(" ", w-6))
+	}
 	r := it.row
+	if r.Ask {
+		return m.renderAskRow(r, w)
+	}
 	// idle + non-empty inbox → show as "has messages" rather than plain idle
 	// (#2). NB: Inbox is retained depth, not per-agent unread (see
 	// ppzInboxDepth), so this fires for any idle agent with inbox history.
@@ -2045,6 +2212,12 @@ func (m tuiModel) renderItem(i int) string {
 	ext := ""
 	if r.Remote { // mesh-only agent, no local session — meshBody uses the same marker
 		ext = "·ext"
+	}
+	if r.Spare { // warm pool spare: booted + primed, waiting for its first task
+		ext = "·warm"
+	}
+	if r.Pending {
+		ext = "·boot"
 	}
 	right := strings.TrimSpace(strings.Join([]string{ext, inbox, ctx, r.Age}, " "))
 	rightW := w - indent - 1 - 1 - nameW - 1 // indent + glyph + sp + name + sp
@@ -2073,6 +2246,26 @@ func (m tuiModel) renderItem(i int) string {
 	return line
 }
 
+// renderAskRow: an ask is a question with a countdown, not a teammate —
+// the question IS the label, the right edge is elapsed time.
+func (m tuiModel) renderAskRow(r lsRow, w int) string {
+	glyph := animatedGlyph(r.State, m.animFrame)
+	if r.State == "idle" {
+		glyph = "✓" // answered
+	}
+	qW := w - 2 - 1 - 1 - 6 // indent + glyph + space + right(age)
+	q := clip(r.Question, qW)
+	if r.Name == m.selName {
+		gs := sSelected.Foreground(stateStyle(r.State).GetForeground())
+		return "  " + gs.Render(glyph) + " " + sSelected.Render(fmt.Sprintf("%-*s %5s", qW, q, r.Age))
+	}
+	st := stateStyle(r.State)
+	if r.State == "idle" {
+		st = lipgloss.NewStyle().Foreground(cIdle).Bold(true) // answer waiting for you
+	}
+	return "  " + st.Render(glyph) + " " + fmt.Sprintf("%-*s ", qW, q) + sDim.Render(fmt.Sprintf("%5s", r.Age))
+}
+
 // viewDetail: one fact per line so the glance works — who/state, harness
 // numbers (or the blocked reason, promoted), where, charter.
 func (m tuiModel) viewDetail() string {
@@ -2081,6 +2274,27 @@ func (m tuiModel) viewDetail() string {
 	r := m.selected()
 	if r == nil {
 		return sep + "\n\n\n\n"
+	}
+	if r.Ask {
+		l1 := " " + stateStyle(r.State).Bold(true).Render(animatedGlyph(r.State, m.animFrame)+" ask "+r.Name) +
+			sDim.Render("  "+r.Model+" · "+r.Age)
+		l2 := " " + sDim.Render(clip("Q: "+r.Question, w-1))
+		l3 := " " + sDim.Render(clip(collapseHome(r.Dir), w-1))
+		var l4 string
+		switch r.State {
+		case "working":
+			l4 = " " + sDim.Render("running — watch it think →   K kills")
+		case "error":
+			l4 = " " + sErr.Render("failed — enter shows output · K dismisses")
+		default:
+			l4 = " " + sStatus.Render("answer ready — enter (or A) · K dismisses")
+		}
+		return sep + "\n" + l1 + "\n" + l2 + "\n" + l3 + "\n" + l4
+	}
+	if r.Pending {
+		l1 := " " + stateStyle("working").Bold(true).Render(animatedGlyph("pending", m.animFrame)+" "+clip(r.Name, 18)) +
+			sDim.Render("  booting")
+		return sep + "\n" + l1 + "\n " + sDim.Render(clip(r.Cmd, w-1)) + "\n\n"
 	}
 	ageSuffix := ""
 	if r.Age != "" {
@@ -2119,26 +2333,39 @@ func (m tuiModel) viewDetail() string {
 		l3 = " " + sDim.Render(clip(dir, w-1))
 		l4 = " " + sDim.Render(clip("$ "+r.Cmd, w-1))
 		if r.Role != "" {
-			l4 = " " + sDim.Render(clip("★ "+r.Role, w-1)) // the charter beats the argv
+			role := "★ " + r.Role
+			if r.Template != "" {
+				role = "★ " + r.Template
+				if r.Spare {
+					role += " (warm spare)"
+				}
+				role += " — " + r.Role
+			}
+			l4 = " " + sDim.Render(clip(role, w-1)) // the charter beats the argv
 		}
 	}
 	return sep + "\n" + l1 + "\n" + l2 + "\n" + l3 + "\n" + l4
 }
 
-// button extents are fixed: " [+ agent] [+ project] [term] "
+// button extents are fixed: " [task] [+ agent] [+ project] [term] "
+const btnTask = "[task]"
 const btnAgent = "[+ agent]"
 const btnProject = "[+ project]"
 const btnTerm = "[term]"
 
 func (m tuiModel) viewButtons() string {
-	return " " + sButton.Render(btnAgent) + " " + sButton.Render(btnProject) + " " + sButton.Render(btnTerm)
+	return " " + sButton.Render(btnTask) + " " + sButton.Render(btnAgent) + " " +
+		sButton.Render(btnProject) + " " + sButton.Render(btnTerm)
 }
 
 func hitButton(x int) string {
-	a0, a1 := 1, 1+len(btnAgent)
+	k0, k1 := 1, 1+len(btnTask)
+	a0, a1 := k1+1, k1+1+len(btnAgent)
 	p0, p1 := a1+1, a1+1+len(btnProject)
 	t0, t1 := p1+1, p1+1+len(btnTerm)
 	switch {
+	case x >= k0 && x < k1:
+		return "task"
 	case x >= a0 && x < a1:
 		return "agent"
 	case x >= p0 && x < p1:
@@ -2320,7 +2547,7 @@ func (m tuiModel) viewBottom() string {
 	if m.statErr {
 		style = sErr
 	}
-	help := sHelp.Render(" a spawn · t term · enter type · ? keys")
+	help := sHelp.Render(" ; task · a spawn · enter type · ? keys")
 	return style.Render(" "+clip(st, sidebarW-1)) + "\n" + help
 }
 

@@ -177,16 +177,16 @@ func TestHookEventState(t *testing.T) {
 		"PermissionRequest": "blocked", "Notification": "blocked",
 		"Stop": "idle", "SessionEnd": "ended", "SomeFutureEvent": "",
 	} {
-		if got, _ := hookEventState(ev, ""); got != want {
+		if got, _ := hookEventState(ev, "", ""); got != want {
 			t.Errorf("hookEventState(%s) = %q, want %q", ev, got, want)
 		}
 	}
 	// idle_prompt ("waiting for your input" nag, ~60s after Stop) is not a
 	// real block — only permission_prompt/agent_needs_input are (#2).
-	if got, _ := hookEventState("Notification", "Claude is waiting for your input"); got != "idle" {
+	if got, _ := hookEventState("Notification", "Claude is waiting for your input", ""); got != "idle" {
 		t.Errorf(`hookEventState(Notification, "waiting for your input") = %q, want "idle"`, got)
 	}
-	if got, _ := hookEventState("Notification", "Claude needs your permission to use Bash"); got != "blocked" {
+	if got, _ := hookEventState("Notification", "Claude needs your permission to use Bash", ""); got != "blocked" {
 		t.Errorf(`hookEventState(Notification, permission) = %q, want "blocked"`, got)
 	}
 }

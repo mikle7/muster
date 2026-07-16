@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -213,9 +211,19 @@ func clearStatus(sessionUUID string) { _ = os.Remove(statusPath(sessionUUID)) }
 
 // hookEventState maps Claude Code hook events to muster states.
 // Unknown events return "" (ignored) so new hook types never break us.
-func hookEventState(event, notifMessage string) (state, reason string) {
+func hookEventState(event, notifMessage, source string) (state, reason string) {
 	switch event {
-	case "PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart":
+	case "SessionStart":
+		// a fresh boot (source=startup) is a claude sitting at its input
+		// prompt — idle, not working. Warm spares depend on this: dispatch
+		// only claims IDLE spares, and a spare's only hook event until its
+		// first task is this one. clear/resume keep reporting working — they
+		// happen mid-flow (refresh/retask kick a prompt in right after).
+		if source == "startup" {
+			return "idle", ""
+		}
+		return "working", ""
+	case "PreToolUse", "PostToolUse", "UserPromptSubmit":
 		return "working", ""
 	case "PermissionRequest":
 		return "blocked", "permission"
@@ -303,7 +311,7 @@ func cmdHook(args []string) int {
 	if payload.HookEventName == "SessionStart" {
 		adoptRotatedSession(os.Getenv("MUSTER_AGENT"), payload.SessionID)
 	}
-	state, reason := hookEventState(payload.HookEventName, payload.Message)
+	state, reason := hookEventState(payload.HookEventName, payload.Message, payload.Source)
 	if state == "" {
 		return 0
 	}
@@ -331,11 +339,13 @@ func cmdHook(args []string) int {
 	if ev := eventForTransition(resolveAgentName(payload.SessionID), prev, st); ev != nil {
 		_ = publishEvent(*ev)
 	}
-	// a fresh post-/clear context gets the agent's handoff notes back —
-	// stdout from a SessionStart hook is injected as context (docs:
-	// hookSpecificOutput.additionalContext), so nothing needs re-explaining
+	// a fresh post-/clear context gets seeded — stdout from a SessionStart
+	// hook is injected as context (docs: hookSpecificOutput.
+	// additionalContext). Refresh = same task: handoff notes + latest
+	// lessons. Retask = NEW task: primer + lessons, and pointedly NOT the
+	// old task's handoff (rotated aside by cmdRetask).
 	if payload.HookEventName == "SessionStart" && payload.Source == "clear" {
-		emitHandoffContext(os.Getenv("MUSTER_AGENT"))
+		emitClearContext(os.Getenv("MUSTER_AGENT"))
 	}
 	return 0
 }
@@ -379,33 +389,63 @@ func migrateEvents(old, newID string) {
 	}
 }
 
-// emitHandoffContext prints SessionStart hook JSON injecting the agent's
-// handoff notes into the just-cleared context. The identity briefing
-// (--append-system-prompt) is a process flag and survives /clear on its own —
-// the handoff is the only thing a clear loses that matters. Docs cap
-// additionalContext at 10k chars; keep the TAIL (latest notes win).
-func emitHandoffContext(agent string) {
-	if b := handoffHookJSON(agent); b != nil {
+// emitClearContext prints SessionStart hook JSON injecting seed context
+// into the just-cleared window. The identity briefing (--append-system-
+// prompt, which since the context-packs work also carries primer + spawn-
+// time lessons) is a process flag and survives /clear on its own — what a
+// clear loses is the handoff, and what has GROWN since spawn is the lessons
+// file. Docs cap additionalContext at 10k chars.
+func emitClearContext(agent string) {
+	if b := clearHookJSON(agent, consumeRetaskMark(agent)); b != nil {
 		fmt.Println(string(b))
 	}
 }
 
-func handoffHookJSON(agent string) []byte {
+func clearHookJSON(agent string, retasked bool) []byte {
 	if agent == "" {
 		return nil
 	}
-	const capChars = 9000
-	b, _ := os.ReadFile(handoffPath(agent))
-	notes := strings.TrimSpace(string(b))
-	if notes == "" {
-		notes = "(handoff file is empty — reconstruct from the repo: git log, git diff, docs, your inbox.)"
+	var ctx string
+	proj := ""
+	if s, err := loadSpec(agent); err == nil {
+		proj = projectFor(loadProjects(), lsRow{Dir: s.Dir, Repo: s.Repo})
 	}
-	if len(notes) > capChars {
-		notes = "…" + notes[len(notes)-capChars:]
+	lessons := readLessons(proj, 2000)
+	if retasked {
+		// NEW task: the old handoff is rotated aside by cmdRetask and must
+		// not leak in. Re-seed with the primer (belt-and-braces alongside
+		// the surviving system prompt) + the latest lessons.
+		primer := ""
+		if s, err := loadSpec(agent); err == nil {
+			primer = capHead(readPrimer(s), 4000)
+		}
+		ctx = "Your context was cleared for a NEW task (muster retask). You are the same agent with the " +
+			"same role and briefing — but the previous task is over; do not resume it. Your next message " +
+			"is the new task."
+		if primer != "" {
+			ctx += "\n\nPROJECT PRIMER:\n" + primer
+		}
+		if lessons != "" {
+			ctx += "\n\nLESSONS LEARNED here by the team:\n" + lessons
+		}
+		ctx += "\n\nStart a fresh handoff file as you work."
+	} else {
+		const capChars = 6500
+		b, _ := os.ReadFile(handoffPath(agent))
+		notes := strings.TrimSpace(string(b))
+		if notes == "" {
+			notes = "(handoff file is empty — reconstruct from the repo: git log, git diff, docs, your inbox.)"
+		}
+		if len(notes) > capChars {
+			notes = "…" + notes[len(notes)-capChars:]
+		}
+		ctx = "Your context was just cleared (muster context refresh). You are the same agent with the same " +
+			"role — your system-prompt briefing still applies. Your handoff notes from before the clear:\n\n" +
+			notes + "\n\nContinue from these notes and keep the handoff file updated as you work."
+		if lessons != "" {
+			ctx += "\n\nLESSONS LEARNED here by the team (may have grown since you were briefed):\n" + lessons
+		}
 	}
-	ctx := "Your context was just cleared (muster context refresh). You are the same agent with the same " +
-		"role — your system-prompt briefing still applies. Your handoff notes from before the clear:\n\n" +
-		notes + "\n\nContinue from these notes and keep the handoff file updated as you work."
 	out, err := json.Marshal(map[string]any{
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":     "SessionStart",
@@ -421,9 +461,6 @@ func handoffHookJSON(agent string) []byte {
 // notifyBlocked posts a macOS notification naming the blocked agent.
 // MUSTER_NOTIFY=0 disables. Best-effort by design.
 func notifyBlocked(sessionUUID, reason string) {
-	if os.Getenv("MUSTER_NOTIFY") == "0" || runtime.GOOS != "darwin" {
-		return
-	}
 	name := resolveAgentName(sessionUUID)
 	if name == "" {
 		name = "an agent"
@@ -431,8 +468,7 @@ func notifyBlocked(sessionUUID, reason string) {
 	if reason == "" {
 		reason = "waiting for input"
 	}
-	script := fmt.Sprintf("display notification %q with title %q", reason, "muster: "+name+" needs you")
-	_ = exec.Command("osascript", "-e", script).Start()
+	notify("muster: "+name+" needs you", reason)
 }
 
 // hooksSettingsPath is the settings file passed to claude via --settings.
@@ -550,6 +586,8 @@ func stateGlyph(state string) string {
 		return "✔"
 	case "error":
 		return "✖"
+	case "pending":
+		return "⋯"
 	case "dead", "ended":
 		return "☠"
 	}

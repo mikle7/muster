@@ -81,6 +81,18 @@
 - [x] known-issue fixes: inbox/recap popups (38-col clip), titled pinned splits (wpin)
 (see STATUS.md "Session 7" + DESIGN.md "Session 7" + docs/COMPETITORS.md)
 
+## Session 12 (2026-07-16) — task-first dispatch  ✅ vet/test/gofmt + headless E2E
+- [x] spec.Model first-class (adoptModel strips user --model; composed at launch/resume; `muster model` + `m` menu)
+- [x] context packs: .muster/primer.md (role-focused ## sections) + `muster lesson add|ls` (append-only), injected at spawn + topped up on /clear
+- [x] `muster retask` (`F`): /clear + primer-not-handoff + NEW task + optional model switch; handoff rotated to .prev
+- [x] ask lane: `muster ask/answers/answer`, mesh-less claude -p one-shots in visible panes, JSON answer capture, notify, auto-reap, ASKS sidebar section, answer fills the right pane
+- [x] templates (`muster template`) + pools (spawn --as auto-numbering) + warm spares (TUI tick keeps one booted+primed; claim = instant task)
+- [x] `muster dispatch` + the `;` palette: inline tokens, epic fan-out (header + bullets), live routing preview = the executor's own resolveDispatch
+- [x] SessionStart source=startup → idle (spares are claimable); source into hookEventState
+- [x] speed: concurrent ppz launch block; pending (`·boot`) optimistic rows; `deliver` types briefs on the boot signal
+- [x] ppz (PR #4): heartbeat `specialty` + `ppz who --specialty/--free`; muster stamps PPZ_AGENT_SPECIALTY and reads it back on remote rows
+(see docs/proposals/fast-dispatch-2026-07-16.md for the design; 19 new unit tests in session12_test.go + spec_test updates)
+
 ## Post-MVP backlog (do not build now)
 - ~~bubbletea dashboard (`muster ui`)~~ → shipped, then reshaped into workspace mode (session 2)
 - tmux status-right segment helper (`muster status --format tmux`)

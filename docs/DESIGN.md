@@ -255,6 +255,63 @@ Fourteen competitors' pain points, distilled into five decisions:
   display-popups (the 38-col clip is gone); pinned splits are titled with
   the agent's name via `muster wpin` (self-exec keeps UI == CLI).
 
+## Session 12 — task-first dispatch (the herdr-return killer)
+
+Full diagnosis + design: docs/proposals/fast-dispatch-2026-07-16.md.
+Michael's three dogfood failures (fresh-context task starts, the
+master-agent dispatcher bottleneck, no 5-minute live-ops lane) shared one
+root: muster's unit of interaction was the AGENT, the user's unit of
+thought is the TASK. Decisions:
+
+- **The `;` palette is the primary entry point.** One key → full-width
+  popup (display-popup running `muster palette`, its own tiny bubbletea
+  program — the 38-col sidebar never crowds) → type the task FIRST,
+  routing is inline tokens (`@target !model /skill #proj`), a live
+  preview line per task shows the resolved plan before enter. The
+  preview and the executor call the same resolveDispatch — what you see
+  is what runs. Epics: header + `- ` bullets fan out, bullets inherit
+  header tokens, each brief carries the epic header as shared context.
+- **Dispatch is deterministic, never an LLM.** Explicit agent → retask
+  when idle / queue when busy; template → claim warm spare → retask
+  freshest idle member → grow pool under cap → refuse LOUDLY (never
+  silently queue work nobody will start). A trailing `?` beats every
+  implicit route: questions want answers, not teammates.
+- **Model is launch state, not identity** (spec.Model): a user `--model`
+  is adopted out of Argv exactly like `--session-id` and composed back
+  at every launch/resume; `muster model <name> X` types /model live and
+  the spec covers the next resume. Faithful resume untouched — guarded
+  by new spec_test/session12_test cases.
+- **Context packs kill the retyping tax**: `.muster/primer.md`
+  (committed, role-focused via `## <template>` sections) + `muster
+  lesson add` (append-only per-project caveats file). Injected into the
+  system prompt at spawn (survives /clear as a process flag) and topped
+  up (lessons grow) via the SessionStart hook on every clear.
+- **retask ≠ refresh.** refresh = same task, handoff carried over.
+  retask (`F`) = NEW task: handoff rotated aside, primer+lessons
+  injected instead (retask marker steers the hook), optional model
+  switch, task typed in. The 40-50%-context idle agent becomes a seeded
+  fresh agent in seconds.
+- **The ask lane is structurally chatter-proof**: `claude -p` one-shots
+  in visible tmux panes with NO mesh identity — no handle, no room, no
+  roster. It cannot be pinged into a 40-minute committee. Answer
+  captured from --output-format json, notification, auto-reap; the
+  answer outlives the pane and fills the right pane on select.
+- **Templates + pools + warm spares**: `muster template add backend
+  --role … --model sonnet --proj game --warm`; `spawn --as backend`
+  auto-numbers; a warm template keeps one booted+primed spare the
+  TUI tick maintains, so dispatch hands a task to a running fresh agent
+  instantly (claim = deliver + unmark + backfill in background).
+  SessionStart source=startup now maps to idle (a fresh claude at its
+  prompt IS idle) — that's the signal spares are claimable on.
+- **Speed**: the launch ppz block runs concurrently; dispatch-spawns
+  write pending markers the sidebar renders instantly (spinner `·boot`
+  rows); `deliver` types the brief the moment the agent's SessionStart
+  hook lands rather than a blind sleep.
+- **ppz (additive only)**: heartbeats carry `specialty` from
+  PPZ_AGENT_SPECIALTY (muster stamps the template name); `ppz who
+  --free --specialty=backend --json` is the future cross-machine bench
+  query. No server/DB change.
+
 ## Non-goals (MVP)
 
 - No Windows. No zellij backend (interface kept thin enough to add).

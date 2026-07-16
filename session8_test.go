@@ -150,7 +150,7 @@ func TestAdoptRotatedSessionNoops(t *testing.T) {
 func TestHandoffHookJSON(t *testing.T) {
 	pinState(t)
 	writeFile(t, handoffPath("alice"), "## Task\nport the login form\n## Next\nwire the API")
-	b := handoffHookJSON("alice")
+	b := clearHookJSON("alice", false)
 	var out struct {
 		H struct {
 			Event string `json:"hookEventName"`
@@ -166,7 +166,7 @@ func TestHandoffHookJSON(t *testing.T) {
 	if !strings.Contains(out.H.Ctx, "context was just cleared") {
 		t.Fatalf("missing orientation preamble: %s", out.H.Ctx)
 	}
-	if handoffHookJSON("") != nil {
+	if clearHookJSON("", false) != nil {
 		t.Fatal("empty agent must emit nothing")
 	}
 }
@@ -175,7 +175,7 @@ func TestHandoffHookJSONCapsAtTail(t *testing.T) {
 	pinState(t)
 	old := strings.Repeat("OLD ", 3000)
 	writeFile(t, handoffPath("big"), old+"\nLATEST-NOTE")
-	b := handoffHookJSON("big")
+	b := clearHookJSON("big", false)
 	if len(b) > 11000 {
 		t.Fatalf("over the 10k additionalContext cap: %d bytes", len(b))
 	}
@@ -186,7 +186,7 @@ func TestHandoffHookJSONCapsAtTail(t *testing.T) {
 
 func TestHandoffMissingFileStillInjectsGuidance(t *testing.T) {
 	pinState(t)
-	b := handoffHookJSON("noone")
+	b := clearHookJSON("noone", false)
 	if !strings.Contains(string(b), "handoff file is empty") {
 		t.Fatalf("missing-file fallback absent: %s", b)
 	}

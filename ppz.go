@@ -226,14 +226,15 @@ func subscribeRoom(session, pipe string) {
 }
 
 type ppzHeartbeat struct {
-	Handle  string
-	Status  string    // online|stale|offline
-	State   string    // ""|idle|working|blocked
-	TS      time.Time // heartbeat emit time (payload "ts"); zero if unparseable
-	Harness string
-	Model   string
-	Host    string
-	Project string // muster's registered project name, if the spawning machine set one
+	Handle    string
+	Status    string    // online|stale|offline
+	State     string    // ""|idle|working|blocked
+	TS        time.Time // heartbeat emit time (payload "ts"); zero if unparseable
+	Harness   string
+	Model     string
+	Host      string
+	Project   string // muster's registered project name, if the spawning machine set one
+	Specialty string // muster's role template ("backend"), if the spawning machine set one
 }
 
 // ppzWho returns heartbeat info keyed by handle. Empty map when ppz is
@@ -257,6 +258,7 @@ func ppzWho() map[string]ppzHeartbeat {
 			Model      string `json:"model"`
 			Hostname   string `json:"hostname"`
 			Project    string `json:"project"`
+			Specialty  string `json:"specialty"`
 		} `json:"heartbeat"`
 	}
 	if json.Unmarshal(out, &rows) != nil {
@@ -267,7 +269,7 @@ func ppzWho() map[string]ppzHeartbeat {
 		res[r.Handle] = ppzHeartbeat{
 			Handle: r.Handle, Status: r.Status, State: r.Heartbeat.AgentState, TS: ts,
 			Harness: r.Heartbeat.Harness, Model: r.Heartbeat.Model, Host: r.Heartbeat.Hostname,
-			Project: r.Heartbeat.Project,
+			Project: r.Heartbeat.Project, Specialty: r.Heartbeat.Specialty,
 		}
 	}
 	return res
