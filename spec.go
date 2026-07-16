@@ -207,14 +207,30 @@ func meshBriefing(s *AgentSpec) string {
 			"room and check it wasn't already claimed — if a teammate claimed it, wait for their summary and " +
 			"build on that instead of redoing the fetch; (3) keep room messages short and conversational — " +
 			"discuss and divide, don't broadcast identical reports."
-		for _, p := range ps {
-			if p.Name == proj && p.ConventionsPrompt != "" {
-				b += " WORKFLOW CONVENTIONS: " + p.ConventionsPrompt
-				break
-			}
-		}
+	}
+	if cp := conventionsPrompt(s); cp != "" {
+		b += " " + cp
 	}
 	return b
+}
+
+// conventionsPrompt returns the opted-in project's WORKFLOW CONVENTIONS
+// line, or "" if the project has none set (#12's opt-in, default-off
+// injection) — pulled out of meshBriefing so it reaches an agent's system
+// prompt even with --no-ppz, where meshBriefing itself never runs (that's
+// entirely mesh-specific; conventions aren't).
+func conventionsPrompt(s *AgentSpec) string {
+	ps := loadProjects()
+	proj := projectFor(ps, lsRow{Dir: s.Dir, Repo: s.Repo})
+	if proj == "" {
+		return ""
+	}
+	for _, p := range ps {
+		if p.Name == proj && p.ConventionsPrompt != "" {
+			return "WORKFLOW CONVENTIONS: " + p.ConventionsPrompt
+		}
+	}
+	return ""
 }
 
 // teamRoster lists the other agents (name + role) for the briefing.
@@ -243,8 +259,15 @@ func injected(s *AgentSpec, hooksSettings string) []string {
 	if hooksSettings != "" {
 		extra = append(extra, "--settings", hooksSettings)
 	}
+	// --no-ppz agents get no mesh briefing (nothing mesh-specific applies),
+	// but an opted-in project's conventions aren't mesh-specific and must
+	// still reach them (#12).
+	prompt := conventionsPrompt(s)
 	if s.PpzHandle != "" {
-		extra = append(extra, "--append-system-prompt", meshBriefing(s))
+		prompt = meshBriefing(s) // already folds conventionsPrompt in
+	}
+	if prompt != "" {
+		extra = append(extra, "--append-system-prompt", prompt)
 	}
 	return extra
 }

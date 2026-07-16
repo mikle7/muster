@@ -183,6 +183,31 @@ func TestEnvDefault(t *testing.T) {
 	}
 }
 
+// TestInjectedConventionsSurviveNoPpz covers #12: an opted-in project's
+// conventions_prompt must reach the agent's --append-system-prompt whether
+// or not it's ppz-wrapped — meshBriefing (mesh-specific) is entirely gated
+// on PpzHandle, and conventions used to be folded inside it, so --no-ppz
+// silently dropped the opt-in.
+func TestInjectedConventionsSurviveNoPpz(t *testing.T) {
+	t.Setenv("MUSTER_STATE_DIR", t.TempDir())
+	if err := saveProjects([]Project{{Name: "demo", Path: "/repo/demo", ConventionsPrompt: "file follow-ups as issues."}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ppzHandle := range []string{"", "agent1"} {
+		s := &AgentSpec{Name: "agent1", Dir: "/repo/demo", PpzHandle: ppzHandle}
+		extra := injected(s, "")
+		var prompt string
+		for i, a := range extra {
+			if a == "--append-system-prompt" && i+1 < len(extra) {
+				prompt = extra[i+1]
+			}
+		}
+		if !strings.Contains(prompt, "WORKFLOW CONVENTIONS: file follow-ups as issues.") {
+			t.Errorf("ppzHandle=%q: conventions missing from injected prompt: %q", ppzHandle, prompt)
+		}
+	}
+}
+
 func TestDetectHarness(t *testing.T) {
 	if detectHarness([]string{"/usr/local/bin/claude", "-n", "x"}) != "claude" {
 		t.Error("path-qualified claude not detected")
