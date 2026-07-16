@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -377,6 +378,7 @@ func (m *tuiModel) pickChoice() string {
 type promptSpec struct {
 	label       string
 	placeholder string
+	multiline   bool // free-form message text (send/broadcast) vs a short y/n or command arg
 	argv        func(text string) []string
 }
 
@@ -421,6 +423,7 @@ type tuiModel struct {
 	mode      string // normal | prompt | form | view | cron
 	prompt    promptSpec
 	input     textinput.Model
+	msgInput  textarea.Model // prompt.multiline's widget (send/broadcast free text)
 	form      *uiForm
 	viewTitle string
 	viewBody  string
@@ -441,7 +444,12 @@ func newTUI() tuiModel {
 	ti := textinput.New()
 	ti.CharLimit = 4096
 	ti.Width = sidebarW - 4
-	return tuiModel{mode: "normal", status: "click an agent, then just type", input: ti, meshProxies: map[string]time.Time{}}
+	ta := textarea.New()
+	ta.CharLimit = 4096
+	ta.SetWidth(sidebarW - 2)
+	ta.SetHeight(composeH)
+	ta.ShowLineNumbers = false
+	return tuiModel{mode: "normal", status: "click an agent, then just type", input: ti, msgInput: ta, meshProxies: map[string]time.Time{}}
 }
 
 func (m tuiModel) Init() tea.Cmd {
@@ -728,7 +736,11 @@ func (m *tuiModel) maybeAutoRefresh() {
 const detailH = 5
 
 func (m tuiModel) listH() int {
-	n := m.h - detailH - 4
+	extra := 0
+	if m.mode == "prompt" && m.prompt.multiline {
+		extra = composeH // bottom grows from 2 lines to label+composeH+help
+	}
+	n := m.h - detailH - 4 - extra
 	if n < 3 {
 		n = 3
 	}
@@ -1115,6 +1127,9 @@ func (m tuiModel) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m tuiModel) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.prompt.multiline {
+		return m.updateMultilinePrompt(msg)
+	}
 	switch msg.String() {
 	case "esc":
 		m.mode = "normal"
@@ -1133,6 +1148,36 @@ func (m tuiModel) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// updateMultilinePrompt backs promptSpec.multiline (send/broadcast free
+// text) with a textarea instead of a single-line field (#9) — same
+// enter-sends/ctrl-j-newline convention room.go already established for
+// the project room chat compose box.
+func (m tuiModel) updateMultilinePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = "normal"
+		m.status, m.statErr = "cancelled", false
+		return m, nil
+	case "enter":
+		text := strings.TrimSpace(m.msgInput.Value())
+		m.mode = "normal"
+		if text == "" {
+			m.status, m.statErr = "cancelled (empty)", false
+			return m, nil
+		}
+		argv := m.prompt.argv(text)
+		m.status, m.statErr = "running: muster "+strings.Join(argv, " "), false
+		return m, runSelf(argv[0], argv...)
+	case "ctrl+j":
+		var cmd tea.Cmd
+		m.msgInput, cmd = m.msgInput.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		return m, cmd
+	}
+	var cmd tea.Cmd
+	m.msgInput, cmd = m.msgInput.Update(msg)
 	return m, cmd
 }
 
@@ -1243,6 +1288,12 @@ func (m tuiModel) submitForm() (tea.Model, tea.Cmd) {
 func (m *tuiModel) openPrompt(p promptSpec) {
 	m.mode = "prompt"
 	m.prompt = p
+	if p.multiline {
+		m.msgInput.Placeholder = p.placeholder
+		m.msgInput.Reset()
+		m.msgInput.Focus()
+		return
+	}
 	m.input.Placeholder = p.placeholder
 	m.input.SetValue("")
 	m.input.Focus()
@@ -1312,14 +1363,14 @@ func (m tuiModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		n := name
 		m.openPrompt(promptSpec{
-			label: "send " + n, placeholder: "message… (delivered when idle)",
+			label: "send " + n, placeholder: "message… (delivered when idle)", multiline: true,
 			argv: func(t string) []string { return []string{"send", n, t} },
 		})
 		return m, nil
 
 	case "b":
 		m.openPrompt(promptSpec{
-			label: "broadcast", placeholder: "message to every live agent…",
+			label: "broadcast", placeholder: "message to every live agent…", multiline: true,
 			argv: func(t string) []string { return []string{"broadcast", t} },
 		})
 		return m, nil
@@ -2207,6 +2258,10 @@ func (m tuiModel) viewScroll() string {
 }
 
 func (m tuiModel) viewBottom() string {
+	if m.mode == "prompt" && m.prompt.multiline {
+		return sTitle.Render(clip(" "+m.prompt.label+" › ", sidebarW-1)) + "\n" + m.msgInput.View() + "\n" +
+			sHelp.Render(clip(" enter send · ^J newline · esc cancel", sidebarW-1))
+	}
 	if m.mode == "prompt" {
 		return sTitle.Render(" "+m.prompt.label+" › ") + m.input.View() + "\n" + sHelp.Render(" enter send · esc cancel")
 	}
