@@ -3,7 +3,35 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-16 (round 2 — see "Round-2 sidebar audit" below
+**Last updated:** 2026-07-17 (muster serve — the HQ gateway, see below)
+
+## muster serve: the HQ gateway (2026-07-17)
+
+Branch `claude/muster-hq-mobile-messaging-74rn18`, paired with the
+Muster HQ mobile work in `mikle7/muster-voice` (same branch name there).
+`muster serve [--addr :7777] [--token t]` (serve.go) is a small HTTP
+surface over the exact CLI calls any local client already makes — for
+remote clients that cannot spawn processes, i.e. the HQ phone app on the
+tailnet. Design rules match the house style: muster verbs SELF-EXEC this
+binary (HTTP and CLI cannot disagree — the runSelf philosophy applied to
+a server), ppz verbs ride ppzOut with its hard timeout, and responses
+are the raw CLI bytes passed through untouched so HQ's existing parsers
+work identically over either transport. Endpoints: `/v1/fleet` (self ls
+--json), `/v1/reread/<pipe|name.inbox>` (validated against a safe name
+regex; limit clamped), `/v1/mesh`, `/v1/pipes`, `/v1/handoff/<name>`
+(reads handoffPath), `/v1/recap/<name>`, `/v1/diffs` (the HQ worktree
+diff sweep, server side), `/v1/send/agent|pipe/<name>` (POST body =
+text), `/v1/pipe/<name>` (create), `/v1/act/review|refresh|done|kill/
+<name>` (202, detached — refresh can wait minutes), `/v1/spawn` (202,
+JSON body; first task sent after spawn succeeds, the HQ dispatcher moved
+server-side), `/v1/ping`. No TLS/accounts by design — the tailnet is the
+boundary; optional bearer token (--token / MUSTER_HQ_TOKEN) as a second
+factor. serve_test.go covers routing, passthrough, name/limit
+validation, act/spawn argv composition (async via a call-recording fake
+runner), token auth, and CLI-failure→502. vet/test/gofmt green. Live
+E2E: ran the real binary's serve against a fake ppz mesh, and the HQ
+app (gateway mode) rendered the fleet/chat over HTTP end-to-end.
+
 for the full list; the one durable decision change is the working-state
 spinner overriding DESIGN.md's "spinners lie" stance, Michael's explicit
 call.)
