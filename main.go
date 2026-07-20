@@ -44,6 +44,9 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
   cron add <name> (--every 4h|--cron "0 9 * * 1"|--at +10m) <prompt>
   cron ls | rm <id>       durable server-side schedules (fire while you sleep)
 
+  serve [--addr :7777] [--token t]  HQ gateway: the CLI surface over HTTP for
+                          remote clients (phone on the tailnet) — see docs
+
   init                    write claude hooks settings + tmux snippet
   doctor                  environment checks
   hook                    (internal) claude hook sink
@@ -66,7 +69,7 @@ func main() {
 		"template": cmdTemplate, "lesson": cmdLesson,
 		"send": cmdSend, "broadcast": cmdBroadcast, "inbox": cmdInbox,
 		"cron": cmdCron, "project": cmdProject, "standup": cmdStandup, "room": cmdRoom,
-		"init": cmdInit, "doctor": cmdDoctor, "hook": cmdHook,
+		"init": cmdInit, "doctor": cmdDoctor, "hook": cmdHook, "serve": cmdServe,
 		"rmenu": cmdRmenu, "fmenu": cmdFmenu, "wpin": cmdWpin, // internal: tmux menu callbacks
 		"source-destroy": cmdSourceDestroy, // internal: clear offline mesh agent
 		"palette":        cmdPalette,       // internal: the ; dispatch popup

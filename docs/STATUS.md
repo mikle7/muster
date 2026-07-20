@@ -3,11 +3,12 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-17 (session 13 — the dispatch/ask rethink, see
-below. Session 12 same branch: task-first dispatch. Same-day earlier:
-round 2 — see "Round-2 sidebar audit"; the one durable decision change
-there is the working-state spinner overriding DESIGN.md's "spinners lie"
-stance, Michael's explicit call.)
+**Last updated:** 2026-07-20 (origin/master merged into the PR branch —
+brings in `muster serve`, the HQ gateway, see below. 2026-07-17: session
+13 — the dispatch/ask rethink. Session 12 same branch: task-first
+dispatch. Same-day earlier: round 2 — see "Round-2 sidebar audit"; the
+one durable decision change there is the working-state spinner overriding
+DESIGN.md's "spinners lie" stance, Michael's explicit call.)
 
 ## Session 13: the rethink — ask mode DELETED, /clear re-briefs, merged⇒auto-reset
 
@@ -52,6 +53,33 @@ surfaces. What shipped this session:
 transient popup composition); grammar diet (keep @target + !model, delete
 the /skill token, #project must refuse loudly on no match, never silent
 cwd fallback).
+
+## muster serve: the HQ gateway (2026-07-17, merged in from master 2026-07-20)
+
+Branch `claude/muster-hq-mobile-messaging-74rn18`, paired with the
+Muster HQ mobile work in `mikle7/muster-voice` (same branch name there).
+`muster serve [--addr :7777] [--token t]` (serve.go) is a small HTTP
+surface over the exact CLI calls any local client already makes — for
+remote clients that cannot spawn processes, i.e. the HQ phone app on the
+tailnet. Design rules match the house style: muster verbs SELF-EXEC this
+binary (HTTP and CLI cannot disagree — the runSelf philosophy applied to
+a server), ppz verbs ride ppzOut with its hard timeout, and responses
+are the raw CLI bytes passed through untouched so HQ's existing parsers
+work identically over either transport. Endpoints: `/v1/fleet` (self ls
+--json), `/v1/reread/<pipe|name.inbox>` (validated against a safe name
+regex; limit clamped), `/v1/mesh`, `/v1/pipes`, `/v1/handoff/<name>`
+(reads handoffPath), `/v1/recap/<name>`, `/v1/diffs` (the HQ worktree
+diff sweep, server side), `/v1/send/agent|pipe/<name>` (POST body =
+text), `/v1/pipe/<name>` (create), `/v1/act/review|refresh|done|kill/
+<name>` (202, detached — refresh can wait minutes), `/v1/spawn` (202,
+JSON body; first task sent after spawn succeeds, the HQ dispatcher moved
+server-side), `/v1/ping`. No TLS/accounts by design — the tailnet is the
+boundary; optional bearer token (--token / MUSTER_HQ_TOKEN) as a second
+factor. serve_test.go covers routing, passthrough, name/limit
+validation, act/spawn argv composition (async via a call-recording fake
+runner), token auth, and CLI-failure→502. vet/test/gofmt green. Live
+E2E: ran the real binary's serve against a fake ppz mesh, and the HQ
+app (gateway mode) rendered the fleet/chat over HTTP end-to-end.
 
 ## Session 12: task-first dispatch, context packs, the ask lane
 
@@ -136,6 +164,11 @@ palette's live preview render correctly.
   design; wire it once single-machine dispatch has bedded in.
 - `muster template` has no TUI editor (JSON + CLI only) — deliberate;
   revisit if templates churn more than expected.
+||||||| d9d4918
+**Last updated:** 2026-07-16 (round 2 — see "Round-2 sidebar audit" below
+for the full list; the one durable decision change is the working-state
+spinner overriding DESIGN.md's "spinners lie" stance, Michael's explicit
+call.)
 
 **Previously:** 2026-07-10 (session 10 — remote rows now follow via a
 persistent background mesh proxy (issue #16, pause+jump): glancing away
