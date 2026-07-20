@@ -9,13 +9,11 @@ package main
 //
 //   fix the login redirect @backend !sonnet /triage-logs #gamesrv
 //
-//   @word   → target: an agent, a template (pool), or "ask" (ephemeral lane)
+//   @word   → target: an agent or a template (pool)
 //   !word   → model override
 //   /word   → skill to invoke (must look like a skill name, so paths in
 //             prose don't false-positive)
 //   #word   → project (when not the current space)
-//   trailing "?" with no target → the ask lane (questions want answers,
-//             not teammates)
 //
 // Epics: a header line plus "- " bullets fans out — each bullet becomes
 // one task carrying the epic header as shared context, inheriting the
@@ -31,8 +29,8 @@ package main
 // template → claim a warm spare, else retask the freshest idle member,
 // else grow the pool under its cap, else refuse loudly; no target → the
 // project's single idle agent, else the project's single template, else
-// ask (for questions) or refuse. Refusals are always explicit — dispatch
-// never silently queues work nobody will start.
+// refuse. Refusals are always explicit — dispatch never silently queues
+// work nobody will start.
 
 import (
 	"encoding/json"
@@ -48,13 +46,12 @@ import (
 )
 
 type dispatchTask struct {
-	Text     string // the task text with tokens stripped
-	Epic     string // shared epic header ("" for standalone tasks)
-	Target   string // @token ("" = auto)
-	Model    string // !token
-	Skill    string // /token
-	Proj     string // #token
-	Question bool   // line ended with "?"
+	Text   string // the task text with tokens stripped
+	Epic   string // shared epic header ("" for standalone tasks)
+	Target string // @token ("" = auto)
+	Model  string // !token
+	Skill  string // /token
+	Proj   string // #token
 }
 
 // skillTokenRe: a /word only counts as a skill token if it looks like a
@@ -81,7 +78,6 @@ func parseTaskLine(line string) dispatchTask {
 		}
 	}
 	t.Text = strings.Join(words, " ")
-	t.Question = strings.HasSuffix(strings.TrimSpace(t.Text), "?")
 	return t
 }
 
@@ -174,7 +170,7 @@ func (t dispatchTask) brief() string {
 // ---- resolution ---------------------------------------------------------
 
 type dispatchAction struct {
-	Kind     string // "ask" | "retask" | "claim" | "send" | "spawn" | "refuse"
+	Kind     string // "retask" | "claim" | "send" | "spawn" | "refuse"
 	Agent    string // retask/claim/send target, or the minted spawn name
 	Template string // spawn/claim/retask-via-pool: which template
 	Why      string // human line for the preview / refusal
@@ -196,7 +192,7 @@ func resolveDispatch(t dispatchTask, rows []lsRow, templates []Template, project
 	}
 	byName := map[string]lsRow{}
 	for _, r := range rows {
-		if !r.Remote && !r.Ask {
+		if !r.Remote {
 			byName[r.Name] = r
 		}
 	}
@@ -205,11 +201,6 @@ func resolveDispatch(t dispatchTask, rows []lsRow, templates []Template, project
 		tmplByName[tp.Name] = tp
 	}
 
-	if t.Target == "ask" {
-		act.Kind = "ask"
-		act.Why = "ephemeral one-shot"
-		return act
-	}
 	if t.Target != "" {
 		if r, ok := byName[t.Target]; ok {
 			return resolveAgentTarget(act, r)
@@ -226,7 +217,7 @@ func resolveDispatch(t dispatchTask, rows []lsRow, templates []Template, project
 	var idle []lsRow
 	var projTemplates []Template
 	for _, r := range rows {
-		if r.Remote || r.Ask || r.Harness != "claude" {
+		if r.Remote || r.Harness != "claude" {
 			continue
 		}
 		if projectFor(projects, r) != proj || proj == "" {
@@ -242,13 +233,6 @@ func resolveDispatch(t dispatchTask, rows []lsRow, templates []Template, project
 		}
 	}
 	switch {
-	case t.Question:
-		// a question wants an answer, not a teammate — the ask lane wins
-		// over every implicit route (an explicit @target still overrides,
-		// handled above)
-		act.Kind = "ask"
-		act.Why = "question → ask lane"
-		return act
 	case len(idle) == 1:
 		return resolveAgentTarget(act, idle[0])
 	case len(projTemplates) == 1:
@@ -263,7 +247,7 @@ func resolveDispatch(t dispatchTask, rows []lsRow, templates []Template, project
 		return act
 	default:
 		act.Kind = "refuse"
-		act.Why = "no target: add @agent/@template, end with ? for the ask lane, or create a template"
+		act.Why = "no target: add @agent/@template, or create a template for this project"
 		return act
 	}
 }
@@ -296,7 +280,7 @@ func resolvePool(act dispatchAction, tp Template, rows []lsRow) dispatchAction {
 	var spare, best *lsRow
 	for i := range rows {
 		r := &rows[i]
-		if r.Template != tp.Name || r.Remote || r.Ask {
+		if r.Template != tp.Name || r.Remote {
 			continue
 		}
 		if r.State != "dead" {
@@ -345,23 +329,6 @@ func executeDispatch(act dispatchAction, projects []Project, space string) (stri
 	switch act.Kind {
 	case "refuse":
 		return "", errf("%s: %s", clip(t.Text, 40), act.Why)
-	case "ask":
-		dir := space
-		if t.Proj != "" {
-			for _, p := range projects {
-				if p.Name == t.Proj {
-					dir = p.Path
-				}
-			}
-		}
-		if dir == "" {
-			dir, _ = os.Getwd()
-		}
-		a := &Ask{Question: t.Text, Skill: t.Skill, Model: t.Model, Dir: dir}
-		if err := startAsk(a); err != nil {
-			return "", err
-		}
-		return "ask " + a.ID + " running (" + a.Model + ")", nil
 	case "send":
 		brief := t.brief()
 		if s, err := loadSpec(act.Agent); err == nil && s.PpzHandle != "" && ppzReady() {
@@ -443,7 +410,7 @@ func cmdDispatch(args []string) int {
 	dry := fs.Bool("dry-run", false, "show the routing plan without acting")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, `usage: muster dispatch "<task…>"
-tokens: @agent|@template|@ask  !model  /skill  #project · "?" ending routes to the ask lane
+tokens: @agent|@template  !model  /skill  #project
 epics:  header line + "- " bullets fan out to multiple agents`)
 	}
 	if err := fs.Parse(args); err != nil {
@@ -617,7 +584,7 @@ func maybeWarmSpares(rows []lsRow) {
 		}
 		live, spares := 0, 0
 		for _, r := range rows {
-			if r.Template != tp.Name || r.Remote || r.Ask {
+			if r.Template != tp.Name || r.Remote {
 				continue
 			}
 			if r.State != "dead" {

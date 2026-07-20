@@ -262,6 +262,31 @@ func teamRoster(self string) string {
 	return strings.Join(parts, ", ")
 }
 
+// identityPrompt is the who-you-are half of the briefing: the mesh briefing
+// (role, roster, handoff contract, room etiquette — or bare conventions for
+// --no-ppz agents) plus the template specialty. Shared by the spawn flags
+// and the /clear hook re-injection, so both always agree and the roster is
+// recomputed fresh at the moment it's needed.
+func identityPrompt(s *AgentSpec) string {
+	// --no-ppz agents get no mesh briefing (nothing mesh-specific applies),
+	// but an opted-in project's conventions aren't mesh-specific and must
+	// still reach them (#12).
+	prompt := conventionsPrompt(s)
+	if s.PpzHandle != "" {
+		prompt = meshBriefing(s) // already folds conventionsPrompt in
+	}
+	// templated agents learn their specialty + go-to skills (template.go)
+	if s.Template != "" {
+		if tb := templateBriefing(findTemplate(s.Template)); tb != "" {
+			if prompt != "" {
+				prompt += " "
+			}
+			prompt += tb
+		}
+	}
+	return prompt
+}
+
 // muster-injected flags, recomputed at every launch — never stored in Argv.
 // firstLaunch gates the system-prompt briefing (team roster + conventions):
 // only the FIRST launch actually needs it — a resumed session's transcript
@@ -279,22 +304,7 @@ func injected(s *AgentSpec, hooksSettings string, firstLaunch bool) []string {
 	if !firstLaunch {
 		return extra
 	}
-	// --no-ppz agents get no mesh briefing (nothing mesh-specific applies),
-	// but an opted-in project's conventions aren't mesh-specific and must
-	// still reach them (#12).
-	prompt := conventionsPrompt(s)
-	if s.PpzHandle != "" {
-		prompt = meshBriefing(s) // already folds conventionsPrompt in
-	}
-	// templated agents learn their specialty + go-to skills (template.go)
-	if s.Template != "" {
-		if tb := templateBriefing(findTemplate(s.Template)); tb != "" {
-			if prompt != "" {
-				prompt += " "
-			}
-			prompt += tb
-		}
-	}
+	prompt := identityPrompt(s)
 	// the context pack (project primer + team lessons, packs.go) seeds every
 	// fresh context regardless of mesh membership — it's a process flag, so
 	// it survives /clear along with the rest of the briefing.

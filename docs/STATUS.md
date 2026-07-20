@@ -3,10 +3,55 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-16 (session 12 — task-first dispatch, see below.
-Same-day earlier: round 2 — see "Round-2 sidebar audit"; the one durable
-decision change there is the working-state spinner overriding DESIGN.md's
-"spinners lie" stance, Michael's explicit call.)
+**Last updated:** 2026-07-17 (session 13 — the dispatch/ask rethink, see
+below. Session 12 same branch: task-first dispatch. Same-day earlier:
+round 2 — see "Round-2 sidebar audit"; the one durable decision change
+there is the working-state spinner overriding DESIGN.md's "spinners lie"
+stance, Michael's explicit call.)
+
+## Session 13: the rethink — ask mode DELETED, /clear re-briefs, merged⇒auto-reset
+
+Live-use verdict from Michael on session 12's two new surfaces: the popup
+palette risks losing long-typed tasks (worst possible failure), and the
+`claude -p` ask lane was unreplyable and styled unlike the rest of the app —
+he /clear'd and used herdr instead. Root cause: both were parallel universes
+inside an app whose thesis is "real tmux + real claude". Decisions locked
+with him (full detail: ../HANDOFF-dispatch-palette.md §Decisions): workflow
+is DIRECT-FIRST (talk to the agent; Greg the workspace-level manager only
+for cross-project epics — and workers DO keep reporting back to him, that
+correction is explicit), ask mode deleted, lifecycle policy over new
+surfaces. What shipped this session:
+
+- **Ask mode deleted** (was ask.go): commands ask/answers/answer/ask-run/
+  ask-rm, the JSON answer store, ASKS sidebar section, @ask + trailing-`?`
+  routing, config ask_model/ask_keep_pane — all gone. `notify()` moved to
+  status.go. The niche is covered by /clear-and-type on any seeded agent,
+  retask, and warm spares.
+- **/clear hook rework** (status.go clearMode/clearHookJSON): a /clear is
+  classified by markers — retask mark → NEW-task injection; refresh mark
+  (auto-refresh ≥75% ctx) → SAME-task handoff re-injection; NO mark = a
+  human typed /clear → fresh start: handoff parked as .prev (kept), primer
+  + lessons injected. EVERY mode now re-injects a recomputed
+  identityPrompt() (spec.go, shared with spawn): the --append-system-prompt
+  briefing only exists on FIRST-launch processes (firstLaunch gate skips it
+  on resume), so a /clear on any kill+resumed agent was amnesia before
+  this. Roster comes out fresher than the spawn snapshot as a bonus.
+- **Merged ⇒ auto-reset** (autoreset.go, TUI tick next to maybeWarmSpares):
+  idle ≥15m + branch committed-during-tenure + clean worktree + fully
+  merged locally (!branchAhead) → background `retask <name> --spare` →
+  fresh seeded context, claimable spare. Full-auto, Michael's explicit
+  call — ends the fleet of half-context agents dangling for days. Known
+  ceiling (ponytail comment in workShipped): squash-merged GitHub PRs are
+  invisible to ancestry — needs a throttled `gh pr view` fallback if that
+  flow matters. `retask --spare` flag added.
+- Tests: session13_test.go (clearMode classification, manual-clear parking
+  + re-brief, every-mode re-brief, workShipped git fixtures).
+
+**Still open (agreed, not built):** palette → persistent tmux window
+(`;` = select-window, esc back, draft autosave, ctrl+E → $EDITOR — NO
+transient popup composition); grammar diet (keep @target + !model, delete
+the /skill token, #project must refuse loudly on no match, never silent
+cwd fallback).
 
 ## Session 12: task-first dispatch, context packs, the ask lane
 

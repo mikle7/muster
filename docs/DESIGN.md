@@ -296,6 +296,13 @@ thought is the TASK. Decisions:
   roster. It cannot be pinged into a 40-minute committee. Answer
   captured from --output-format json, notification, auto-reap; the
   answer outlives the pane and fills the right pane on select.
+  - **REVERSED 2026-07-17 (session 13, live-use verdict): ask mode
+    deleted.** A `claude -p` one-shot can't take a reply — a dead end by
+    construction — and its printf answer views broke the "everything is
+    real claude in a real pane" thesis; Michael /clear'd and used herdr
+    instead. Its niche is covered by retask/warm spares/manual /clear
+    (which now re-briefs identity — see session 13 in STATUS.md).
+    Anything conversational must BE an interactive claude pane.
 - **Templates + pools + warm spares**: `muster template add backend
   --role … --model sonnet --proj game --warm`; `spawn --as backend`
   auto-numbers; a warm template keeps one booted+primed spare the

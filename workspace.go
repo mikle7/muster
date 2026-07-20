@@ -260,22 +260,6 @@ func (wp *workspacePanes) showRemotePlaceholder(name, msg string) {
 	_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", name+" (mesh)")
 }
 
-// showAnswer fills the right pane with a finished ask's Q&A — selecting an
-// answered ask reads its answer where the agent's terminal would be.
-func (wp *workspacePanes) showAnswer(id string) {
-	if wp.right == "" {
-		return
-	}
-	target := "answer:" + id
-	if wp.lastTarget == target {
-		return
-	}
-	cmd := "sh -c " + shQuote(shQuote(selfExe())+" answer "+id+"; exec tail -f /dev/null")
-	_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right, cmd)
-	_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", "ask "+id)
-	wp.lastTarget = target
-}
-
 // showPending: a spawn was just decided; its pane doesn't exist yet.
 func (wp *workspacePanes) showPending(name string) {
 	if wp.right == "" {

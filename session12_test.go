@@ -1,7 +1,7 @@
 package main
 
 // Session 12: task-first dispatch, context packs, model-as-launch-state,
-// the ask lane, templates/pools, retask. Everything here is the pure core
+// templates/pools, retask. Everything here is the pure core
 // of those features — the tmux/claude halves are covered by headless E2E.
 
 import (
@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // ---- model adoption + composition ------------------------------------------
@@ -64,10 +63,6 @@ func TestParseTaskLineTokens(t *testing.T) {
 	tk = parseTaskLine("check /var/log/app.log and src/foo.go please")
 	if tk.Skill != "" || !strings.Contains(tk.Text, "/var/log/app.log") {
 		t.Fatalf("path ate a skill token: %+v", tk)
-	}
-	tk = parseTaskLine("why can't user 4821 log in?")
-	if !tk.Question {
-		t.Fatal("trailing ? not detected")
 	}
 }
 
@@ -184,20 +179,10 @@ func TestResolveNoTarget(t *testing.T) {
 	if act.Kind != "retask" || act.Agent != "backend-3" {
 		t.Fatalf("project template pool should route: %+v", act)
 	}
-	// question with nowhere else to go → ask lane
-	act = resolveDispatch(parseTaskLine("why is prod slow?"), nil, nil, ps, "")
-	if act.Kind != "ask" {
-		t.Fatalf("question should fall to ask: %+v", act)
-	}
-	// statement with nowhere to go → loud refusal, never silent queueing
+	// anything with nowhere to go → loud refusal, never silent queueing
 	act = resolveDispatch(parseTaskLine("do mystery work"), nil, nil, ps, "")
 	if act.Kind != "refuse" {
 		t.Fatalf("no target must refuse: %+v", act)
-	}
-	// @ask forces the lane even for statements
-	act = resolveDispatch(parseTaskLine("summarize the deploy log @ask"), rows, ts, ps, "")
-	if act.Kind != "ask" {
-		t.Fatalf("@ask override: %+v", act)
 	}
 }
 
@@ -273,7 +258,7 @@ func TestClearHookJSONRetask(t *testing.T) {
 	if err := saveSpec(s); err != nil {
 		t.Fatal(err)
 	}
-	b := clearHookJSON("al", true)
+	b := clearHookJSON("al", "retask")
 	var out struct {
 		H struct {
 			Ctx string `json:"additionalContext"`
@@ -290,7 +275,7 @@ func TestClearHookJSONRetask(t *testing.T) {
 		t.Fatalf("old handoff leaked into a retask: %s", out.H.Ctx)
 	}
 	// refresh path still carries the handoff + lessons
-	b = clearHookJSON("al", false)
+	b = clearHookJSON("al", "refresh")
 	if !strings.Contains(string(b), "OLD-TASK-NOTES") || !strings.Contains(string(b), "LESSON-CONTENT") {
 		t.Fatalf("refresh injection wrong: %s", b)
 	}
@@ -307,26 +292,6 @@ func TestRetaskMarkConsume(t *testing.T) {
 	}
 	if consumeRetaskMark("al") {
 		t.Fatal("mark must be one-shot")
-	}
-}
-
-// ---- ask rows -----------------------------------------------------------------
-
-func TestAskRows(t *testing.T) {
-	now := time.Now()
-	asks := []*Ask{
-		{ID: "a1", Question: "why is login down?", State: "running", Model: "sonnet", StartedAt: now.Add(-2 * time.Minute)},
-		{ID: "a2", Question: "old one", State: "done", StartedAt: now.Add(-10 * time.Minute), DoneAt: now.Add(-5 * time.Minute)},
-	}
-	rows := askRows(asks)
-	if len(rows) != 2 {
-		t.Fatalf("want 2 rows, got %d", len(rows))
-	}
-	if !rows[0].Ask || rows[0].State != "working" || rows[0].Question == "" {
-		t.Fatalf("running row: %+v", rows[0])
-	}
-	if rows[1].State != "idle" || rows[1].Age != "5m0s" {
-		t.Fatalf("done row: %+v", rows[1])
 	}
 }
 

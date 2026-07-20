@@ -180,12 +180,6 @@ func previewLine(act dispatchAction) string {
 	t := act.Task
 	var parts []string
 	switch act.Kind {
-	case "ask":
-		model := t.Model
-		if model == "" {
-			model = askModel()
-		}
-		parts = append(parts, "ask · "+model, act.Why)
 	case "retask":
 		parts = append(parts, "retask "+act.Agent, act.Why)
 	case "claim":
@@ -200,7 +194,7 @@ func previewLine(act dispatchAction) string {
 	if t.Skill != "" {
 		parts = append(parts, "/"+t.Skill)
 	}
-	if t.Model != "" && act.Kind != "ask" {
+	if t.Model != "" {
 		parts = append(parts, t.Model)
 	}
 	line := strings.Join(parts, " · ")

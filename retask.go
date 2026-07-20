@@ -68,8 +68,9 @@ func retaskInFlight(name string) bool {
 func cmdRetask(args []string) int {
 	fs := flag.NewFlagSet("retask", flag.ExitOnError)
 	model := fs.String("model", "", "switch model for the new task (opus|sonnet|haiku|id)")
+	spare := fs.Bool("spare", false, "mark the reset agent a claimable warm spare (auto-reset sweep)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: muster retask <name> [--model m] [task text…]")
+		fmt.Fprintln(os.Stderr, "usage: muster retask <name> [--model m] [--spare] [task text…]")
 	}
 	if len(args) < 1 {
 		fs.Usage()
@@ -135,6 +136,13 @@ func cmdRetask(args []string) int {
 		fmt.Println("warning: no session-id rotation observed (hooks off? old claude?) — continuing anyway")
 	}
 
+	if *spare {
+		// reload — the hook's adoption just rewrote the spec
+		if s2, err := loadSpec(name); err == nil {
+			s2.Spare = true
+			_ = saveSpec(s2)
+		}
+	}
 	if *model != "" {
 		// after rotation so the fresh session gets it; spec too so resume
 		// composes it. Reload — the hook's adoption just rewrote the spec.

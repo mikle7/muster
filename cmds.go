@@ -405,8 +405,6 @@ type lsRow struct {
 
 	Template string `json:"template,omitempty"` // role template this agent was spawned from
 	Spare    bool   `json:"spare,omitempty"`    // warm pool spare, unclaimed
-	Ask      bool   `json:"ask,omitempty"`      // ephemeral ask-lane row (ID in Name)
-	Question string `json:"question,omitempty"` // ask: the question text
 	Pending  bool   `json:"pending,omitempty"`  // optimistic row: spawn decided, spec not on disk yet
 }
 
@@ -421,31 +419,7 @@ func gatherRows() ([]lsRow, error) {
 	for _, p := range loadPending(specs) {
 		rows = append(rows, lsRow{Name: p.Name, State: "pending", Pending: true, Cmd: p.Note})
 	}
-	return append(rows, askRows(listAsks())...), nil
-}
-
-// askRows renders ask-lane entries as sidebar rows. Pure for testability.
-func askRows(asks []*Ask) []lsRow {
-	var rows []lsRow
-	for _, a := range asks {
-		state := "working"
-		switch a.State {
-		case "done":
-			state = "idle"
-		case "error":
-			state = "error"
-		}
-		age := fmtAge(a.StartedAt)
-		if !a.DoneAt.IsZero() {
-			age = a.DoneAt.Sub(a.StartedAt).Round(time.Second).String()
-		}
-		rows = append(rows, lsRow{
-			Name: a.ID, State: state, Ask: true, Question: a.Question,
-			Model: a.Model, Dir: a.Dir, Age: age, Tmux: askSession(a.ID),
-			Project: a.Project, Cmd: "ask",
-		})
-	}
-	return rows
+	return rows, nil
 }
 
 // buildRows is gatherRows' pure core (no subprocess calls) so it's testable
