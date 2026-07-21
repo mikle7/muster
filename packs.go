@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // primer size cap in the spawn briefing; lessons tail cap alongside it.
@@ -119,9 +120,17 @@ func readLessons(proj string, capChars int) string {
 	return capTail(strings.TrimSpace(string(b)), capChars)
 }
 
+// capHead/capTail cap s to an n-BYTE budget (these feed the --append-system-
+// prompt / SessionStart additionalContext, both byte-limited). n is a byte
+// budget, not a rune count — but the cut must land on a rune boundary, or a
+// multibyte UTF-8 char gets split mid-sequence and the injected prompt shows a
+// replacement glyph (garbles identity/primer/lessons for any non-ASCII text).
 func capHead(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) { // back off to the start of a rune
+		n--
 	}
 	return s[:n] + "…"
 }
@@ -130,7 +139,11 @@ func capTail(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return "…" + s[len(s)-n:]
+	i := len(s) - n
+	for i < len(s) && !utf8.RuneStart(s[i]) { // advance to the start of a rune
+		i++
+	}
+	return "…" + s[i:]
 }
 
 // contextPack builds the seeding block appended to a fresh agent's system
