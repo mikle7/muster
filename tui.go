@@ -762,17 +762,23 @@ func (m *tuiModel) rebuild() tea.Cmd {
 // blocks on a minutes-long cycle.
 func (m *tuiModel) maybeAutoRefresh() {
 	pct := refreshCtxPct()
-	if pct <= 0 {
+	tok := refreshCtxTokens()
+	if pct <= 0 && tok <= 0 {
 		return
 	}
 	for _, r := range m.rows {
-		if !shouldAutoRefresh(r.Harness, r.State, r.CtxPct, pct) || refreshInFlight(r.Name) {
+		if !shouldAutoRefresh(r.Harness, r.State, r.CtxPct, pct, r.CtxTok, tok) || refreshInFlight(r.Name) {
 			continue
 		}
 		setRefreshMark(r.Name) // claim before the subprocess starts
 		_ = exec.Command(selfExe(), "refresh", r.Name).Start()
-		m.status, m.statErr = fmt.Sprintf("auto-refresh %s (ctx %d%% ≥ %d%%): handoff → /clear → resume",
-			r.Name, int(r.CtxPct), pct), false
+		// name whichever trigger fired so the status line explains itself
+		why := fmt.Sprintf("ctx %d%% ≥ %d%%", int(r.CtxPct), pct)
+		if tok > 0 && r.CtxTok >= tok && !(pct > 0 && r.CtxPct >= float64(pct)) {
+			why = fmt.Sprintf("%dk tok ≥ %dk", r.CtxTok/1000, tok/1000)
+		}
+		m.status, m.statErr = fmt.Sprintf("auto-refresh %s (%s): handoff → /clear → resume",
+			r.Name, why), false
 	}
 }
 

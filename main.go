@@ -54,7 +54,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
 
 state: ⚙ working  ⌛ stalled  ✋ blocked (needs input)  → idle+mail  ✔ idle  ☠ dead
 env: MUSTER_DEFAULT_CMD, MUSTER_PPZ, MUSTER_STATE_DIR, MUSTER_STALL_MIN, MUSTER_REFRESH_PCT
-config: <state>/config.json — skip_permissions (default true), repo_roots, repo_depth, stall_after_min, refresh_ctx_pct (auto context refresh at this ctx% when idle; 0 off, default 75)
+config: <state>/config.json — skip_permissions (default true), repo_roots, repo_depth, stall_after_min, refresh_ctx_pct (auto context refresh at this ctx% when idle; 0 off, default 75), refresh_ctx_tokens (…or past this many context tokens; 0 off, default 500000)
 worktree env: .worktreeinclude copies files; .muster/setup runs in the pane before the agent
 `
 

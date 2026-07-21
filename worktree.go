@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func git(dir string, args ...string) (string, error) {
@@ -13,6 +15,60 @@ func git(dir string, args ...string) (string, error) {
 	c.Dir = dir
 	out, err := c.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
+}
+
+// worktreeFetchTimeout caps the best-effort fetch so a slow/hung network never
+// stalls a spawn — on timeout we just fall back to the local base.
+const worktreeFetchTimeout = 20 * time.Second
+
+// freshBase resolves the ref a NEW worktree branch should be cut from so the
+// agent starts at real latest master (herdr-parity), not whatever stale commit
+// the local checkout happens to sit on. Best-effort: fetch origin's default
+// branch and return "origin/<default>". On ANY problem — fetch disabled, no
+// remote, unset origin/HEAD, offline — return "" so the caller falls back to
+// the local HEAD; a spawn must never block or fail on this. note is a one-line
+// message to surface (empty = say nothing; true of the common no-remote case,
+// which keeps local test repos silent and hermetic).
+func freshBase(repo string) (ref, note string) {
+	if os.Getenv("MUSTER_WORKTREE_NO_FETCH") != "" {
+		return "", ""
+	}
+	// no remote at all (local-only repo, most tests): nothing to fetch, stay quiet
+	if out, err := git(repo, "remote"); err != nil || strings.TrimSpace(out) == "" {
+		return "", ""
+	}
+	branch := baseBranch(repo)
+	if branch == "" {
+		return "", "" // detached HEAD / can't tell: fall back to local
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), worktreeFetchTimeout)
+	defer cancel()
+	c := exec.CommandContext(ctx, "git", "fetch", "origin", branch)
+	c.Dir = repo
+	if _, ferr := c.CombinedOutput(); ferr != nil {
+		return "", "muster: worktree base: fetch failed, using local HEAD (offline?)"
+	}
+	return "origin/" + branch, "muster: worktree base: origin/" + branch + " (latest)"
+}
+
+// baseBranch names the branch a fresh worktree should track from origin.
+// Prefers origin's default branch (origin/HEAD) when the local symbolic ref is
+// set; otherwise the repo's own current branch — the common case (a checkout
+// sitting on main) resolves to main either way. "" when HEAD is detached or
+// unreadable, so the caller falls back to the local base. origin/HEAD is NOT
+// always set (a clone of a push-populated bare repo has none), which is why
+// current-branch is a required fallback, not a nicety.
+func baseBranch(repo string) string {
+	if out, err := git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		if d := strings.TrimPrefix(strings.TrimSpace(out), "origin/"); d != "" {
+			return d
+		}
+	}
+	cur, err := git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+	if cur = strings.TrimSpace(cur); err != nil || cur == "" || cur == "HEAD" {
+		return ""
+	}
+	return cur
 }
 
 // worktreeAdd creates a sibling worktree <repo>__wt/<branch> on branch
@@ -39,9 +95,20 @@ func worktreeAdd(repo, branch string) (dir string, fullBranch string, err error)
 	}
 	args := []string{"worktree", "add"}
 	if _, berr := git(repo, "rev-parse", "--verify", "refs/heads/"+fullBranch); berr != nil {
-		args = append(args, "-b", fullBranch, dir) // new branch from HEAD
+		// new branch: cut it from a freshly-fetched base so the agent starts at
+		// real latest, not a stale local checkout. Best-effort — "" means the
+		// fetch was skipped/failed and we fall back to local HEAD.
+		base, note := freshBase(repo)
+		if note != "" {
+			fmt.Println(note)
+		}
+		if base != "" {
+			args = append(args, "-b", fullBranch, dir, base)
+		} else {
+			args = append(args, "-b", fullBranch, dir) // local HEAD
+		}
 	} else {
-		args = append(args, dir, fullBranch)
+		args = append(args, dir, fullBranch) // existing branch: leave it as-is
 	}
 	if out, err := git(repo, args...); err != nil {
 		return "", "", fmt.Errorf("git worktree add: %v: %s", err, out)

@@ -68,11 +68,26 @@ func refreshCtxPct() int {
 	return 75
 }
 
-// shouldAutoRefresh: idle claude agent past the threshold. Idle-only is the
-// safety property — a working agent is never yanked mid-task; it gets
-// refreshed the moment it next comes up for air. Pure for testability.
-func shouldAutoRefresh(harness, state string, ctxPct float64, threshold int) bool {
-	return harness == "claude" && state == "idle" && threshold > 0 && ctxPct >= float64(threshold)
+// shouldAutoRefresh: idle claude agent past EITHER threshold — a context-used
+// percentage (pctThreshold) OR an absolute context-token ceiling (tokThreshold,
+// tokens = current context tokens, 0 when Claude Code didn't report them).
+// Two triggers because % alone can't see absolute cost: a coordinator on a 1M
+// window sits at 52% (~520k tokens) — under a 75% pct threshold yet already
+// expensive per turn, and it would ride there until Claude's own lossy
+// auto-compaction kicked in. The token ceiling catches that before compaction;
+// the pct trigger still covers small-window agents (where tokens never reach
+// the ceiling). Idle-only is the safety property — a working agent is never
+// yanked mid-task; it gets refreshed the moment it next comes up for air.
+// Either threshold at 0 disables that trigger; both 0 disables auto-refresh.
+// Pure for testability.
+func shouldAutoRefresh(harness, state string, ctxPct float64, pctThreshold int, tokens, tokThreshold int64) bool {
+	if harness != "claude" || state != "idle" {
+		return false
+	}
+	if pctThreshold > 0 && ctxPct >= float64(pctThreshold) {
+		return true
+	}
+	return tokThreshold > 0 && tokens >= tokThreshold
 }
 
 // ---- the cycle ------------------------------------------------------------

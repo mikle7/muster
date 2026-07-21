@@ -13,11 +13,12 @@ import (
 // (MUSTER_SKIP_PERMISSIONS, MUSTER_REPO_ROOTS) so tests and one-offs can
 // override without editing it.
 type Config struct {
-	SkipPermissions *bool    `json:"skip_permissions,omitempty"` // default true
-	RepoRoots       []string `json:"repo_roots,omitempty"`       // picker scan roots
-	RepoDepth       int      `json:"repo_depth,omitempty"`       // picker scan depth, default 3
-	StallAfterMin   *int     `json:"stall_after_min,omitempty"`  // "working" with no hook events for this long = stalled (0 disables, default 10)
-	RefreshCtxPct   *int     `json:"refresh_ctx_pct,omitempty"`  // auto context-refresh when idle past this ctx% (0 disables, default 75)
+	SkipPermissions  *bool    `json:"skip_permissions,omitempty"`   // default true
+	RepoRoots        []string `json:"repo_roots,omitempty"`         // picker scan roots
+	RepoDepth        int      `json:"repo_depth,omitempty"`         // picker scan depth, default 3
+	StallAfterMin    *int     `json:"stall_after_min,omitempty"`    // "working" with no hook events for this long = stalled (0 disables, default 10)
+	RefreshCtxPct    *int     `json:"refresh_ctx_pct,omitempty"`    // auto context-refresh when idle past this ctx% (0 disables, default 75)
+	RefreshCtxTokens *int     `json:"refresh_ctx_tokens,omitempty"` // auto context-refresh when idle past this many absolute context tokens (0 disables, default 500000)
 }
 
 func configPath() string { return filepath.Join(dataDir(), "config.json") }
@@ -59,6 +60,26 @@ func stallAfter() time.Duration {
 	return 10 * time.Minute
 }
 
+// refreshCtxTokens: auto-refresh when an idle agent's absolute context tokens
+// pass this ceiling. Complements refreshCtxPct — a percentage means very
+// different absolute cost on a 200k vs a 1M window, so a coordinator on a big
+// window can sit under the % threshold yet carry a huge per-turn cost. The
+// invariant: this must fire BEFORE Claude's own lossy auto-compaction, never
+// after. Default 500000 catches a ~520k/1M-window bloat with margin while
+// staying unreachable on a 200k window (where the % trigger does the work).
+// 0 disables. Env MUSTER_REFRESH_TOKENS > config refresh_ctx_tokens > default.
+func refreshCtxTokens() int64 {
+	if v := os.Getenv("MUSTER_REFRESH_TOKENS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	if c := loadConfig(); c.RefreshCtxTokens != nil {
+		return int64(*c.RefreshCtxTokens)
+	}
+	return 500000
+}
+
 func repoDepth() int {
 	if c := loadConfig(); c.RepoDepth > 0 {
 		return c.RepoDepth
@@ -75,12 +96,14 @@ func writeDefaultConfig() {
 	on := true
 	stall := 10
 	refresh := 75
+	refreshTok := 500000
 	c := Config{
-		SkipPermissions: &on,
-		RepoRoots:       []string{"~/Repos", "~/repos", "~/code", "~/src", "~/Projects", "~/dev", "~/work"},
-		RepoDepth:       3,
-		StallAfterMin:   &stall,
-		RefreshCtxPct:   &refresh,
+		SkipPermissions:  &on,
+		RepoRoots:        []string{"~/Repos", "~/repos", "~/code", "~/src", "~/Projects", "~/dev", "~/work"},
+		RepoDepth:        3,
+		StallAfterMin:    &stall,
+		RefreshCtxPct:    &refresh,
+		RefreshCtxTokens: &refreshTok,
 	}
 	b, _ := json.MarshalIndent(c, "", "  ")
 	if os.MkdirAll(dataDir(), 0o755) == nil {

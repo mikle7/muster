@@ -116,7 +116,8 @@ func joinLines(lines []string) string {
 type AgentUsage struct {
 	Model       string    `json:"model,omitempty"` // display name ("Opus")
 	CtxPct      float64   `json:"ctx_pct"`
-	FiveHrPct   float64   `json:"five_hr_pct"` // 0 = unknown (API-key users)
+	UsedTokens  int64     `json:"used_tokens,omitempty"` // absolute context tokens in use (0 = CC didn't report)
+	FiveHrPct   float64   `json:"five_hr_pct"`           // 0 = unknown (API-key users)
 	FiveHrReset time.Time `json:"five_hr_reset,omitempty"`
 	TS          time.Time `json:"ts"`
 }
@@ -153,6 +154,17 @@ func cmdStatusLine() int {
 		} `json:"model"`
 		ContextWindow struct {
 			UsedPercentage float64 `json:"used_percentage"`
+			// absolute context tokens in use (input incl. cache reads/writes —
+			// the numerator behind used_percentage). Lets the refresh trigger
+			// key off real size, not a % that means 150k on a 200k window but
+			// 520k on a 1M one. Reads 0 (not missing) before the first API
+			// response, and the % trigger carries the load then (refresh.go).
+			// CAVEAT: this means CURRENT context tokens only on Claude Code
+			// >= v2.1.132; BEFORE that it was CUMULATIVE session totals, so on
+			// pre-2.1.132 CC the token ceiling would fire off lifetime usage
+			// and over-refresh. We run current CC; the %-fallback is the
+			// backstop if an old CC ever reports a cumulative number here.
+			TotalInputTokens int64 `json:"total_input_tokens"`
 		} `json:"context_window"`
 		RateLimits struct {
 			FiveHour struct {
@@ -169,10 +181,11 @@ func cmdStatusLine() int {
 		model = p.Model.ID
 	}
 	u := AgentUsage{
-		Model:     model,
-		CtxPct:    p.ContextWindow.UsedPercentage,
-		FiveHrPct: p.RateLimits.FiveHour.UsedPercentage,
-		TS:        time.Now(),
+		Model:      model,
+		CtxPct:     p.ContextWindow.UsedPercentage,
+		UsedTokens: p.ContextWindow.TotalInputTokens,
+		FiveHrPct:  p.RateLimits.FiveHour.UsedPercentage,
+		TS:         time.Now(),
 	}
 	if p.RateLimits.FiveHour.ResetsAt > 0 {
 		u.FiveHrReset = time.Unix(p.RateLimits.FiveHour.ResetsAt, 0)
