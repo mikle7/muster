@@ -245,7 +245,14 @@ func conventionsPrompt(s *AgentSpec) string {
 	return ""
 }
 
-// teamRoster lists the other agents (name + role) for the briefing.
+// teamRoster lists the other agents (name + one-line specialty) for the
+// briefing. It uses shortRole, NOT the full o.Role: a role is a whole task
+// brief (often paragraphs), and embedding every teammate's entire brief here
+// bloated the roster to ~20KB+ — it grows with the fleet, is re-paid on every
+// spawn/clear/retask/spare-boot, and once overflowed argv into the
+// "tmux new-session: command too long" crash (see injected() in this file).
+// A teammate only needs "who does what" to decide who to ping; the detail is
+// a `ppz send`/`ppz who` away on demand.
 func teamRoster(self string) string {
 	specs, _ := listSpecs()
 	var parts []string
@@ -254,12 +261,32 @@ func teamRoster(self string) string {
 			continue
 		}
 		p := o.Name
-		if o.Role != "" {
-			p += " (" + o.Role + ")"
+		if sr := shortRole(o.Role); sr != "" {
+			p += " (" + sr + ")"
 		}
 		parts = append(parts, p)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// shortRole condenses a free-form role brief to a one-line specialty: the
+// first sentence (to the first period or line break), capped. Whitespace is
+// collapsed so a multi-line brief can't smuggle newlines into the roster. The
+// cap slices RUNES, not bytes — roles are free-form text (accents, curly
+// quotes, em-dashes), and a byte-boundary cut would emit invalid UTF-8 into
+// the --append-system-prompt argv this very fix exists to keep clean.
+func shortRole(role string) string {
+	role = strings.TrimSpace(role)
+	// '.' and '\n' are single-byte, so this byte index is always a rune boundary
+	if i := strings.IndexAny(role, ".\n"); i >= 0 {
+		role = strings.TrimSpace(role[:i])
+	}
+	role = strings.Join(strings.Fields(role), " ")
+	const max = 60
+	if r := []rune(role); len(r) > max {
+		role = strings.TrimSpace(string(r[:max])) + "…"
+	}
+	return role
 }
 
 // identityPrompt is the who-you-are half of the briefing: the mesh briefing
