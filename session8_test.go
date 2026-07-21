@@ -207,24 +207,38 @@ func TestBriefingIncludesHandoffPath(t *testing.T) {
 
 func TestShouldAutoRefresh(t *testing.T) {
 	cases := []struct {
+		name           string
 		harness, state string
 		ctx            float64
-		threshold      int
+		pctThreshold   int
+		tokens         int64
+		tokThreshold   int64
 		want           bool
 	}{
-		{"claude", "idle", 80, 75, true},
-		{"claude", "idle", 75, 75, true},
-		{"claude", "idle", 74, 75, false},    // below threshold
-		{"claude", "working", 90, 75, false}, // never yank a working agent
-		{"claude", "blocked", 90, 75, false},
-		{"claude", "dead", 90, 75, false},
-		{"", "idle", 90, 75, false},      // unknown harness: no /clear to drive
-		{"claude", "idle", 90, 0, false}, // 0 disables
+		// pct trigger
+		{"pct over", "claude", "idle", 80, 75, 0, 500000, true},
+		{"pct at", "claude", "idle", 75, 75, 0, 500000, true},
+		{"pct under", "claude", "idle", 74, 75, 100000, 500000, false},
+		{"working never yanked", "claude", "working", 90, 75, 900000, 500000, false},
+		{"blocked", "claude", "blocked", 90, 75, 0, 500000, false},
+		{"dead", "claude", "dead", 90, 75, 0, 500000, false},
+		{"unknown harness", "", "idle", 90, 75, 900000, 500000, false},
+		// token trigger: the incident — 52% of a 1M window is under 75% but
+		// over the 500k ceiling, so the token trigger MUST catch it.
+		{"52pct 1M window", "claude", "idle", 52, 75, 520000, 500000, true},
+		{"tok at ceiling", "claude", "idle", 10, 75, 500000, 500000, true},
+		{"tok under ceiling", "claude", "idle", 10, 75, 499999, 500000, false},
+		// small-window agent: tokens never reach the ceiling, pct carries it
+		{"200k window under both", "claude", "idle", 60, 75, 120000, 500000, false},
+		// disabling
+		{"both disabled", "claude", "idle", 90, 0, 900000, 0, false},
+		{"pct off tok on", "claude", "idle", 90, 0, 500000, 500000, true},
+		{"tok off pct on", "claude", "idle", 80, 75, 900000, 0, true},
 	}
 	for _, c := range cases {
-		if got := shouldAutoRefresh(c.harness, c.state, c.ctx, c.threshold); got != c.want {
-			t.Errorf("shouldAutoRefresh(%q,%q,%v,%d) = %v want %v",
-				c.harness, c.state, c.ctx, c.threshold, got, c.want)
+		if got := shouldAutoRefresh(c.harness, c.state, c.ctx, c.pctThreshold, c.tokens, c.tokThreshold); got != c.want {
+			t.Errorf("%s: shouldAutoRefresh(%q,%q,%v,%d,%d,%d) = %v want %v",
+				c.name, c.harness, c.state, c.ctx, c.pctThreshold, c.tokens, c.tokThreshold, got, c.want)
 		}
 	}
 }

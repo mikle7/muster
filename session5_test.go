@@ -291,3 +291,81 @@ func TestPpzRunTimesOut(t *testing.T) {
 		t.Errorf("timeout took %v — WaitDelay not working", time.Since(start))
 	}
 }
+
+// ---- fresh worktree base (start clean at latest master) -----------------------
+
+// mkRemote builds a bare "origin" plus a working clone wired to it (origin/HEAD
+// set), so freshBase's origin-default resolution has something to find.
+func mkRemote(t *testing.T) (bare, work string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	bare = filepath.Join(t.TempDir(), "origin.git")
+	if out, err := git("", "init", "--bare", "-b", "main", bare); err != nil {
+		t.Fatalf("init bare: %v: %s", err, out)
+	}
+	work = testRepo(t) // main + one commit
+	// deliberately NO `remote set-head`: a clone of a push-populated bare repo
+	// has no origin/HEAD, and freshBase must still resolve the base via the
+	// current branch. This mirrors the real case that first broke it.
+	for _, a := range [][]string{
+		{"remote", "add", "origin", bare},
+		{"push", "-u", "origin", "main"},
+	} {
+		if out, err := git(work, a...); err != nil {
+			t.Fatalf("git %v: %v: %s", a, err, out)
+		}
+	}
+	return bare, work
+}
+
+func TestFreshBaseNoRemote(t *testing.T) {
+	repo := testRepo(t) // plain local repo, no origin
+	if ref, note := freshBase(repo); ref != "" || note != "" {
+		t.Fatalf("no-remote repo: want empty, got ref=%q note=%q", ref, note)
+	}
+}
+
+func TestFreshBaseDisabled(t *testing.T) {
+	t.Setenv("MUSTER_WORKTREE_NO_FETCH", "1")
+	_, work := mkRemote(t)
+	if ref, note := freshBase(work); ref != "" || note != "" {
+		t.Fatalf("MUSTER_WORKTREE_NO_FETCH should skip: got ref=%q note=%q", ref, note)
+	}
+}
+
+// The guarantee: a fresh worktree starts at origin's LATEST even when the local
+// checkout is behind. Advance origin from a second clone, then a new worktree
+// cut in the stale clone must contain the commit its own HEAD lacks.
+func TestWorktreeAddFetchesLatest(t *testing.T) {
+	bare, work := mkRemote(t)
+	other := filepath.Join(t.TempDir(), "other")
+	if out, err := git("", "clone", bare, other); err != nil {
+		t.Fatalf("clone: %v: %s", err, out)
+	}
+	for _, a := range [][]string{
+		{"config", "user.email", "t@t"}, {"config", "user.name", "t"},
+	} {
+		git(other, a...)
+	}
+	if err := os.WriteFile(filepath.Join(other, "latest.txt"), []byte("newer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range [][]string{{"add", "."}, {"commit", "-m", "ahead"}, {"push", "origin", "main"}} {
+		if out, err := git(other, a...); err != nil {
+			t.Fatalf("git %v: %v: %s", a, err, out)
+		}
+	}
+	// stale clone `work` has NO latest.txt yet
+	if _, err := os.Stat(filepath.Join(work, "latest.txt")); err == nil {
+		t.Fatal("precondition: work should be behind origin")
+	}
+	dir, _, err := worktreeAdd(work, "feat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "latest.txt")); err != nil {
+		t.Fatalf("worktree did not start at origin latest — missing latest.txt (%v)", err)
+	}
+}

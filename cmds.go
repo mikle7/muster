@@ -397,6 +397,7 @@ type lsRow struct {
 	Cmd     string  `json:"cmd"`
 	Model   string  `json:"model,omitempty"`   // from claude statusline
 	CtxPct  float64 `json:"ctx_pct,omitempty"` // context window used %
+	CtxTok  int64   `json:"ctx_tok,omitempty"` // absolute context tokens in use (0 = unreported)
 	FivePct float64 `json:"five_pct,omitempty"`
 	FiveEnd string  `json:"five_end,omitempty"` // HH:MM reset time
 	Remote  bool    `json:"remote,omitempty"`   // mesh-only: no local spec (other machine)
@@ -452,7 +453,7 @@ func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, inbox map[string]
 				if u.Model != "" {
 					r.Model = u.Model // live statusline beats the spec's alias
 				}
-				r.CtxPct, r.FivePct = u.CtxPct, u.FiveHrPct
+				r.CtxPct, r.CtxTok, r.FivePct = u.CtxPct, u.UsedTokens, u.FiveHrPct
 				if !u.FiveHrReset.IsZero() {
 					r.FiveEnd = u.FiveHrReset.Local().Format("15:04")
 				}
