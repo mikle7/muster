@@ -3,16 +3,31 @@ package main
 import (
 	"os"
 	"runtime/debug"
+	"sync"
 )
 
-// musterVersion is a short build marker so a restart is verifiable at a glance
-// — Michael's ask: "it's hard to tell if the TUI actually updated". `go build`
-// stamps the git revision into the binary automatically (Go 1.18+ VCS info),
-// so there is NO build plumbing to add. When that stamp is absent (built with
-// -buildvcs=false, or from a non-git tree) it falls back to the installed
-// binary's mtime — the same freshness signal workspaceBinaryChanged already
-// keys off (workspace.go).
+// musterVersion returns a short build marker so a restart is verifiable at a
+// glance — Michael's ask: "it's hard to tell if the TUI actually updated".
+// Memoized: the value is immutable for the process lifetime, and View() calls
+// it on every render (anim ticks included), so we resolve it once and keep
+// os.Executable()/os.Stat off the hot render path — matching the codebase's
+// no-syscalls-on-tick discipline.
+var (
+	versionOnce   sync.Once
+	versionCached string
+)
+
 func musterVersion() string {
+	versionOnce.Do(func() { versionCached = computeMusterVersion() })
+	return versionCached
+}
+
+// computeMusterVersion resolves the marker once. `go build` stamps the git
+// revision into the binary automatically (Go 1.18+ VCS info), so there is NO
+// build plumbing to add. When that stamp is absent (built with -buildvcs=false,
+// or from a non-git tree) it falls back to the installed binary's mtime — the
+// same freshness signal workspaceBinaryChanged already keys off (workspace.go).
+func computeMusterVersion() string {
 	if info, ok := debug.ReadBuildInfo(); ok {
 		var rev string
 		var dirty bool
