@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -223,6 +224,54 @@ func ensureRoomPipe(proj string) (string, error) {
 // best-effort (the agent still works without the room).
 func subscribeRoom(session, pipe string) {
 	_, _ = ppzOut(session, "subs", "add", pipe)
+}
+
+// ---- control-handle subscription guard --------------------------------------
+// Agents sometimes `ppz subs add mstrctl.inbox` to "watch" the controller.
+// That inbox is where every ack / standup reply / review verdict lands (bare
+// sends to mstrctl), so a subscribed agent gets nudged by each one — and its
+// own reply lands there too, nudging any other subscriber. Over a quiet
+// weekend that's a token-burn multiplier with no task behind it. muster NEVER
+// subscribes an agent to the control handle, so pruning it is always safe.
+// The guard is structural (not just a briefing line agents may ignore): the
+// Stop hook prunes it whenever the agent goes idle, throttled so it's cheap.
+
+const ctlSubPruneInterval = 2 * time.Minute
+
+func ctlSubPruneMarkPath(agent string) string {
+	return filepath.Join(dataDir(), "subguard", agent+".ts")
+}
+
+// ctlSubPruneDue reports whether agent's prune is due (throttled to once per
+// ctlSubPruneInterval) and, when due, stamps the marker so the next call
+// within the window is a no-op. Keeps the turn-end hook from shelling out to
+// ppz on every single idle.
+func ctlSubPruneDue(agent string) bool {
+	mp := ctlSubPruneMarkPath(agent)
+	if b, err := os.ReadFile(mp); err == nil {
+		if ts, e := time.Parse(time.RFC3339, strings.TrimSpace(string(b))); e == nil && time.Since(ts) < ctlSubPruneInterval {
+			return false
+		}
+	}
+	_ = os.MkdirAll(filepath.Dir(mp), 0o755)
+	_ = atomicWrite(mp, []byte(time.Now().Format(time.RFC3339)))
+	return true
+}
+
+// pruneCtlSubscription unsubscribes agent from the control handle's inbox
+// (and, defensively, the bare handle). Best-effort, throttled, mesh-only.
+// Runs in the agent's own ppz session — the Stop-hook env sets PPZ_SESSION to
+// it. --force so a not-subscribed target isn't an error; ppz's own guard keeps
+// us from ever removing the agent's own inbox or the room pipe. ppzOutFast's
+// 2s timeout matches the discipline for anything on the synchronous hook path.
+func pruneCtlSubscription(agent string) {
+	if agent == "" || !ctlSubPruneDue(agent) {
+		return
+	}
+	if s, err := loadSpec(agent); err != nil || s.PpzHandle == "" {
+		return // not on the mesh: nothing to unsubscribe
+	}
+	_, _ = ppzOutFast(agent, "subs", "rm", "--force", ctlHandle+".inbox", ctlHandle)
 }
 
 type ppzHeartbeat struct {

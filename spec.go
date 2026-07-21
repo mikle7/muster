@@ -200,9 +200,11 @@ func meshBriefing(s *AgentSpec) string {
 	}
 	b += " Message any teammate by name: ppz send <name> '<text>' (64KiB cap — send pointers like " +
 		"branch/sha/path, not diffs); 'ppz who' shows who's online. The user (and their control handle " +
-		"mstrctl) also messages you. When told to run 'ppz subs read', run it and act on every message, " +
-		"replying to senders by name. A message starting with STANDUP means: reply to its sender in under " +
-		"5 lines with your current task, progress, blockers, and what's next." +
+		"mstrctl) also messages you — those DMs already arrive in your OWN inbox, so NEVER 'ppz subs add " +
+		"mstrctl' or 'ppz subs add mstrctl.inbox' (subscribing to the controller's inbox floods you with " +
+		"every other agent's acks and replies — a runaway loop). When told to run 'ppz subs read', run it " +
+		"and act on every message, replying to senders by name. A message starting with STANDUP means: " +
+		"reply to its sender in under 5 lines with your current task, progress, blockers, and what's next." +
 		" CONTEXT HANDOFF: maintain " + handoffPath(s.Name) + " as a rolling markdown handoff — current " +
 		"task, state, key decisions, file paths, exact next steps. It is pre-seeded with a '## Resume state' " +
 		"section on top and a '" + handoffLogMarker + "' marker: keep the live resume state ABOVE the marker " +
