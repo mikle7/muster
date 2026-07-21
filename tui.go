@@ -1913,7 +1913,7 @@ func (m tuiModel) View() string {
 	if m.filter != "" {
 		info += " /" + m.filter
 	}
-	title := sTitle.Render(" muster ") + sDim.Render(clip(info, sidebarW-9))
+	title := sTitle.Render(" muster ") + sDim.Render(clip(musterVersion()+" · "+info, sidebarW-9))
 	var mid string
 	switch m.mode {
 	case "form":
