@@ -50,6 +50,7 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
 
   init                    write claude hooks settings + tmux snippet
   doctor                  environment checks
+  version                 print the build marker (confirm a reinstall took)
   hook                    (internal) claude hook sink
 
 state: ⚙ working  ⌛ stalled  ✋ blocked (needs input)  → idle+mail  ✔ idle  ☠ dead
@@ -78,6 +79,10 @@ func main() {
 	}
 	if os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h" {
 		fmt.Print(usage)
+		os.Exit(0)
+	}
+	if os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v" {
+		fmt.Println(musterVersionFull())
 		os.Exit(0)
 	}
 	fn, ok := cmds[os.Args[1]]
