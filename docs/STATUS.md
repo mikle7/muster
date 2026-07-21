@@ -3,9 +3,58 @@
 > Ongoing handoff doc. Any agent picking this up: read this file first, then
 > `DESIGN.md` (decisions), `PLAN.md` (phases), `RESEARCH.md` (why).
 
-**Last updated:** 2026-07-17 (muster serve — the HQ gateway, see below)
+**Last updated:** 2026-07-20 (origin/master merged into the PR branch —
+brings in `muster serve`, the HQ gateway, see below. 2026-07-17: session
+13 — the dispatch/ask rethink. Session 12 same branch: task-first
+dispatch. Same-day earlier: round 2 — see "Round-2 sidebar audit"; the
+one durable decision change there is the working-state spinner overriding
+DESIGN.md's "spinners lie" stance, Michael's explicit call.)
 
-## muster serve: the HQ gateway (2026-07-17)
+## Session 13: the rethink — ask mode DELETED, /clear re-briefs, merged⇒auto-reset
+
+Live-use verdict from Michael on session 12's two new surfaces: the popup
+palette risks losing long-typed tasks (worst possible failure), and the
+`claude -p` ask lane was unreplyable and styled unlike the rest of the app —
+he /clear'd and used herdr instead. Root cause: both were parallel universes
+inside an app whose thesis is "real tmux + real claude". Decisions locked
+with him (full detail: ../HANDOFF-dispatch-palette.md §Decisions): workflow
+is DIRECT-FIRST (talk to the agent; Greg the workspace-level manager only
+for cross-project epics — and workers DO keep reporting back to him, that
+correction is explicit), ask mode deleted, lifecycle policy over new
+surfaces. What shipped this session:
+
+- **Ask mode deleted** (was ask.go): commands ask/answers/answer/ask-run/
+  ask-rm, the JSON answer store, ASKS sidebar section, @ask + trailing-`?`
+  routing, config ask_model/ask_keep_pane — all gone. `notify()` moved to
+  status.go. The niche is covered by /clear-and-type on any seeded agent,
+  retask, and warm spares.
+- **/clear hook rework** (status.go clearMode/clearHookJSON): a /clear is
+  classified by markers — retask mark → NEW-task injection; refresh mark
+  (auto-refresh ≥75% ctx) → SAME-task handoff re-injection; NO mark = a
+  human typed /clear → fresh start: handoff parked as .prev (kept), primer
+  + lessons injected. EVERY mode now re-injects a recomputed
+  identityPrompt() (spec.go, shared with spawn): the --append-system-prompt
+  briefing only exists on FIRST-launch processes (firstLaunch gate skips it
+  on resume), so a /clear on any kill+resumed agent was amnesia before
+  this. Roster comes out fresher than the spawn snapshot as a bonus.
+- **Merged ⇒ auto-reset** (autoreset.go, TUI tick next to maybeWarmSpares):
+  idle ≥15m + branch committed-during-tenure + clean worktree + fully
+  merged locally (!branchAhead) → background `retask <name> --spare` →
+  fresh seeded context, claimable spare. Full-auto, Michael's explicit
+  call — ends the fleet of half-context agents dangling for days. Known
+  ceiling (ponytail comment in workShipped): squash-merged GitHub PRs are
+  invisible to ancestry — needs a throttled `gh pr view` fallback if that
+  flow matters. `retask --spare` flag added.
+- Tests: session13_test.go (clearMode classification, manual-clear parking
+  + re-brief, every-mode re-brief, workShipped git fixtures).
+
+**Still open (agreed, not built):** palette → persistent tmux window
+(`;` = select-window, esc back, draft autosave, ctrl+E → $EDITOR — NO
+transient popup composition); grammar diet (keep @target + !model, delete
+the /skill token, #project must refuse loudly on no match, never silent
+cwd fallback).
+
+## muster serve: the HQ gateway (2026-07-17, merged in from master 2026-07-20)
 
 Branch `claude/muster-hq-mobile-messaging-74rn18`, paired with the
 Muster HQ mobile work in `mikle7/muster-voice` (same branch name there).
@@ -32,6 +81,91 @@ runner), token auth, and CLI-failure→502. vet/test/gofmt green. Live
 E2E: ran the real binary's serve against a fake ppz mesh, and the HQ
 app (gateway mode) rendered the fleet/chat over HTTP end-to-end.
 
+## Session 12: task-first dispatch, context packs, the ask lane
+
+Branch `claude/muster-workflow-context-13xlha` (PR #19), plus ppz PR #4.
+Design doc: docs/proposals/fast-dispatch-2026-07-16.md (written first,
+then built in full the same day on Michael's go). The premise: muster's
+unit of interaction was the agent; Michael's unit of thought is the task —
+hence the master-agent dispatcher bottleneck, the herdr returns for
+fresh-context starts, and the 40-minute live-ops incident. What shipped:
+
+- **`;` dispatch palette** (palette.go, `muster palette` in a
+  display-popup): task text first, inline routing tokens (@agent/
+  @template/@ask, !model, /skill, #proj), trailing `?` → ask lane,
+  header + `- ` bullets fan an epic out with token inheritance. The live
+  preview calls the SAME resolveDispatch the executor runs. `[task]`
+  button + project right-click "dispatch a task…" reach it by mouse.
+- **Deterministic dispatch** (dispatch.go): idle agent → retask (fresh
+  seeded context); busy → queue (mesh send, or typed — runs after its
+  turn); template pool → warm-spare claim → freshest-idle retask → grow
+  under cap → LOUD refusal. Never an LLM, never silent queueing.
+- **`muster retask` / `F`** (retask.go): the missing verb between
+  refresh (same task) and kill+spawn. Waits idle if needed, rotates the
+  handoff to .prev, /clear, injects primer+lessons INSTEAD of handoff
+  (retask marker consumed by the hook), optional --model switch, types
+  the new task.
+- **Context packs** (packs.go): committed `.muster/primer.md` with
+  role-focused `## <template>` sections + `muster lesson add` append-only
+  per-project caveats. In the spawn system prompt (survives /clear) and
+  topped up via SessionStart (lessons grow after spawn).
+- **The ask lane** (ask.go): `muster ask --skill live-triage "user 4821
+  can't get in?"` → mesh-less `claude -p` one-shot (sonnet default,
+  config ask_model) in a visible mstr-ask-<id> pane; answer captured
+  from --output-format json, desktop notification, pane auto-reaps
+  (errors keep it), ASKS sidebar section, enter/right-pane shows the
+  Q&A, `u` counts unread answers as needs-you. No handle, no room, no
+  roster: it structurally cannot be pulled into the committee that
+  burned 40 minutes.
+- **Templates/pools/spares** (template.go): role+model+skills+project+
+  cap+warm bundles; `spawn --as backend` auto-numbers; warm templates
+  keep one booted+primed spare (TUI tick, in-flight marker); claiming
+  types the task instantly and backfills in the background.
+- **spec.Model** (spec.go): --model adopted out of Argv like
+  --session-id, composed at every launch/resume; `muster model <name>
+  [alias]` (live /model + spec) + `m` menu. Faithful-resume tests
+  extended, not weakened.
+- **SessionStart source=startup → idle** (status.go): a fresh claude at
+  its prompt IS idle — the signal spares are claimable on; clear/resume
+  keep reporting working (mid-flow). Events pipe unaffected (idle
+  publishes nothing).
+- **Speed**: launch's ppz block parallelized (room ensure+subscribe ∥
+  source-exists); dispatch spawns write pending markers → instant
+  `·boot` spinner rows; `deliver` types briefs when the SessionStart
+  hook lands (no blind sleeps); optimistic row + immediate post-palette
+  refresh.
+- **ppz PR #4** (additive): heartbeat `specialty` from
+  PPZ_AGENT_SPECIALTY (muster stamps the template), `ppz who
+  --specialty/--free` bench filters; muster reads specialty back into
+  remote rows' Template.
+
+vet/test/gofmt green both repos; 19 new unit tests (session12_test.go) +
+ppz who_specialty_test.go. Headless E2E on a scratch server with a stub
+claude: template spawn composed the full seeded briefing (verbatim Argv
+untouched), dispatch dry-run fanned an epic correctly, a real ask
+round-tripped question→JSON answer→answers list→sidebar ✓ row→right-pane
+Q&A, warm spare auto-spawned from the TUI tick with the `·warm` tag,
+`muster model` flipped spec+live, spawn form's template selector and the
+palette's live preview render correctly.
+
+### Session 12 open items for live dogfood
+
+- The palette blocks the TUI while open (same display-popup pattern as
+  recap/inbox — fine there, worth feeling out on a real fleet).
+- Real-claude checks: does a warm spare actually report idle via
+  SessionStart(startup) hooks (new mapping); retask's /clear + /model
+  sequencing against live autocomplete; ask -p skill expansion against
+  the real live-triage skills; notification UX on answer.
+- Dispatch send-fallback types into a BUSY agent's input box when off-
+  mesh (queues until its turn ends) — verify the feel; mesh path nudges
+  on idle as before.
+- Cross-machine dispatch (ppz --free/--specialty) is plumbing-ready but
+  NOT wired into resolveDispatch — local-only routing for now, by
+  design; wire it once single-machine dispatch has bedded in.
+- `muster template` has no TUI editor (JSON + CLI only) — deliberate;
+  revisit if templates churn more than expected.
+||||||| d9d4918
+**Last updated:** 2026-07-16 (round 2 — see "Round-2 sidebar audit" below
 for the full list; the one durable decision change is the working-state
 spinner overriding DESIGN.md's "spinners lie" stance, Michael's explicit
 call.)

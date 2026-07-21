@@ -81,6 +81,26 @@
 - [x] known-issue fixes: inbox/recap popups (38-col clip), titled pinned splits (wpin)
 (see STATUS.md "Session 7" + DESIGN.md "Session 7" + docs/COMPETITORS.md)
 
+## Session 12 (2026-07-16) — task-first dispatch  ✅ vet/test/gofmt + headless E2E
+- [x] spec.Model first-class (adoptModel strips user --model; composed at launch/resume; `muster model` + `m` menu)
+- [x] context packs: .muster/primer.md (role-focused ## sections) + `muster lesson add|ls` (append-only), injected at spawn + topped up on /clear
+- [x] `muster retask` (`F`): /clear + primer-not-handoff + NEW task + optional model switch; handoff rotated to .prev
+- [x] ~~ask lane: `muster ask/answers/answer`, mesh-less claude -p one-shots in visible panes, JSON answer capture, notify, auto-reap, ASKS sidebar section, answer fills the right pane~~ **DELETED session 13** — unreplyable + off-thesis; see STATUS.md
+- [x] templates (`muster template`) + pools (spawn --as auto-numbering) + warm spares (TUI tick keeps one booted+primed; claim = instant task)
+- [x] `muster dispatch` + the `;` palette: inline tokens, epic fan-out (header + bullets), live routing preview = the executor's own resolveDispatch
+- [x] SessionStart source=startup → idle (spares are claimable); source into hookEventState
+- [x] speed: concurrent ppz launch block; pending (`·boot`) optimistic rows; `deliver` types briefs on the boot signal
+- [x] ppz (PR #4): heartbeat `specialty` + `ppz who --specialty/--free`; muster stamps PPZ_AGENT_SPECIALTY and reads it back on remote rows
+(see docs/proposals/fast-dispatch-2026-07-16.md for the design; 19 new unit tests in session12_test.go + spec_test updates)
+
+## Session 13 (2026-07-17) — the rethink  ✅ vet/test/gofmt
+- [x] ask mode deleted (commands, store, sidebar section, @ask, ?-routing, ask_model/ask_keep_pane config; notify() → status.go)
+- [x] /clear hook rework: clearMode (retask/refresh/manual by markers); manual = fresh start, handoff parked .prev; EVERY mode re-injects identityPrompt() (fixes resumed-agent /clear amnesia — briefing flag is first-launch-only)
+- [x] merged ⇒ auto-reset (autoreset.go): idle ≥15m + committed-during-tenure + clean + !branchAhead → `retask --spare` in background; `retask --spare` flag
+- [ ] palette → persistent tmux window (no popup composition; draft autosave; ctrl+E $EDITOR)
+- [ ] grammar diet: drop /skill token; #project refuses loudly on no match
+(decisions log: ../HANDOFF-dispatch-palette.md; tests in session13_test.go)
+
 ## Post-MVP backlog (do not build now)
 - ~~bubbletea dashboard (`muster ui`)~~ → shipped, then reshaped into workspace mode (session 2)
 - tmux status-right segment helper (`muster status --format tmux`)

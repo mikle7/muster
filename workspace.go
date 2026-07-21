@@ -260,6 +260,21 @@ func (wp *workspacePanes) showRemotePlaceholder(name, msg string) {
 	_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", name+" (mesh)")
 }
 
+// showPending: a spawn was just decided; its pane doesn't exist yet.
+func (wp *workspacePanes) showPending(name string) {
+	if wp.right == "" {
+		return
+	}
+	target := "pending:" + name
+	if wp.lastTarget == target {
+		return
+	}
+	_, _ = tmuxRun("respawn-pane", "-k", "-t", wp.right,
+		placeholderCmd("hiring '"+name+"' — booting now.\n\nits terminal appears here the moment it's up."))
+	_, _ = tmuxRun("select-pane", "-t", wp.right, "-T", name+" (booting)")
+	wp.lastTarget = target
+}
+
 // ---- mesh proxies: persistent background `ppz terminal attach` sessions --
 
 // meshProxySession names the local tmux session that keeps a remote

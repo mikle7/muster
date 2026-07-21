@@ -14,7 +14,14 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
 
   (no command)            open the muster UI
 
-  spawn <name> [--role txt] [-C dir | --repo dir -b branch] [-e K=V]... [--] [cmd...]
+  dispatch "<task…>"      route a task: @agent/@template !model /skill #proj;
+                          epics (header + "- " bullets) fan out to several agents
+  retask <name> [--model m] [--spare] [task…]
+                          repurpose an agent: /clear + primer + NEW task (F in the UI)
+  model <name> [alias]    show/set an agent's model (live /model + spec for resume)
+  template ls|add|rm      role templates: charter+model+skills+pool cap (+--warm spare)
+  lesson add <proj> <txt> record a caveat every future fresh context receives
+  spawn [<name>] [--as tmpl] [--model m] [--role txt] [-C dir | --repo dir -b branch] [-e K=V]... [--] [cmd...]
                           start an agent (default cmd: $MUSTER_DEFAULT_CMD or claude)
   q [cmd...]              quick spawn: auto-named chat-XXXX in cwd, workspace bucket
   ls [--json] [--watch]   every agent: state, inbox depth, age
@@ -56,13 +63,17 @@ func main() {
 	}
 	cmds := map[string]func([]string) int{
 		"ui": cmdTUI, "spawn": cmdSpawn, "q": cmdQ, "ls": cmdLs, "attach": cmdAttach, "menu": cmdMenu,
-		"resume": cmdResume, "kill": cmdKill, "refresh": cmdRefresh,
-		"recap": cmdRecap, "done": cmdDone, "review": cmdReview,
+		"resume": cmdResume, "kill": cmdKill, "refresh": cmdRefresh, "retask": cmdRetask,
+		"recap": cmdRecap, "done": cmdDone, "review": cmdReview, "model": cmdModel,
+		"dispatch": cmdDispatch,
+		"template": cmdTemplate, "lesson": cmdLesson,
 		"send": cmdSend, "broadcast": cmdBroadcast, "inbox": cmdInbox,
 		"cron": cmdCron, "project": cmdProject, "standup": cmdStandup, "room": cmdRoom,
 		"init": cmdInit, "doctor": cmdDoctor, "hook": cmdHook, "serve": cmdServe,
 		"rmenu": cmdRmenu, "fmenu": cmdFmenu, "wpin": cmdWpin, // internal: tmux menu callbacks
 		"source-destroy": cmdSourceDestroy, // internal: clear offline mesh agent
+		"palette":        cmdPalette,       // internal: the ; dispatch popup
+		"deliver":        cmdDeliver,       // internal: type a brief once an agent boots
 	}
 	if os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h" {
 		fmt.Print(usage)

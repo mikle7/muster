@@ -28,19 +28,37 @@ func cmdSpawn(args []string) int {
 	repo := fs.String("repo", "", "repo to create a worktree from (with -b)")
 	branch := fs.String("b", "", "branch/worktree name (with --repo)")
 	role := fs.String("role", "", "the agent's charter, e.g. 'reviewer' — teammates learn it")
+	model := fs.String("model", "", "model alias/id — first-class (spec.Model), changeable later via muster model")
+	as := fs.String("as", "", "spawn from a role template (muster template ls); name optional, auto-numbered")
+	spare := fs.Bool("spare", false, "mark as a warm pool spare (dispatch claims it first)")
 	var envFlags multiFlag
 	fs.Var(&envFlags, "e", "extra env K=V (repeatable)")
 	noPpz := fs.Bool("no-ppz", false, "don't wrap in ppz terminal share")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: muster spawn <name> [-C dir | --repo dir -b branch] [-e K=V]... [--] [command...]")
+		fmt.Fprintln(os.Stderr, "usage: muster spawn [<name>] [--as template] [--model m] [-C dir | --repo dir -b branch] [-e K=V]... [--] [command...]")
 		fs.PrintDefaults()
 	}
-	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
-		fs.Usage()
+	// name is optional when --as mints one (backend-1, backend-2, …)
+	name := ""
+	rest := args
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name, rest = args[0], args[1:]
+	}
+	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
-	name := args[0]
-	if err := fs.Parse(args[1:]); err != nil {
+	var tmpl *Template
+	if *as != "" {
+		if tmpl = findTemplate(*as); tmpl == nil {
+			return fail(errf("no template %q (muster template ls)", *as))
+		}
+		if name == "" {
+			specs, _ := listSpecs()
+			name = poolName(tmpl.Name, specs)
+		}
+	}
+	if name == "" {
+		fs.Usage()
 		return 2
 	}
 	if err := validName(name); err != nil {
@@ -54,6 +72,9 @@ func cmdSpawn(args []string) int {
 	}
 
 	argv := fs.Args()
+	if len(argv) == 0 && tmpl != nil && len(tmpl.Cmd) > 0 {
+		argv = append([]string{}, tmpl.Cmd...)
+	}
 	if len(argv) == 0 {
 		if def := os.Getenv("MUSTER_DEFAULT_CMD"); def != "" {
 			argv = strings.Fields(def)
@@ -65,10 +86,30 @@ func cmdSpawn(args []string) int {
 	spec := &AgentSpec{
 		Name:        name,
 		Role:        *role,
+		Model:       *model,
 		Argv:        argv,
 		Env:         map[string]string{},
 		TmuxSession: tmuxSession(name),
 		CreatedAt:   time.Now(),
+		Spare:       *spare,
+	}
+	if tmpl != nil {
+		spec.Template = tmpl.Name
+		if spec.Role == "" {
+			spec.Role = tmpl.Role
+		}
+		if spec.Model == "" {
+			spec.Model = tmpl.Model
+		}
+		// the template's default project stands in for -C when neither -C
+		// nor --repo was given
+		if *dir == "" && *repo == "" && tmpl.Project != "" {
+			for _, p := range loadProjects() {
+				if p.Name == tmpl.Project {
+					*dir = p.Path
+				}
+			}
+		}
 	}
 	for _, kv := range envFlags {
 		k, v, ok := strings.Cut(kv, "=")
@@ -111,14 +152,70 @@ func cmdSpawn(args []string) int {
 
 	spec.Harness = detectHarness(argv)
 	if spec.Harness == "claude" {
-		if adopted, rest := adoptSessionID(argv); adopted != "" {
+		if adopted, rest := adoptSessionID(spec.Argv); adopted != "" {
 			spec.SessionUUID, spec.Argv = adopted, rest
 		} else {
 			spec.SessionUUID = newUUID()
 		}
+		// a --model inside the user's command is launch state, not identity —
+		// adopt it into the spec (same move as --session-id) so `muster
+		// model` can change it later without rewriting history. An explicit
+		// --model flag on spawn wins over one buried in the command.
+		if adopted, rest := adoptModel(spec.Argv); adopted != "" {
+			if spec.Model == "" {
+				spec.Model = adopted
+			}
+			spec.Argv = rest
+		}
 	}
 
 	return launch(spec, false, *noPpz, setup)
+}
+
+// cmdModel shows or changes an agent's model. Live claude agents get a
+// /model typed into their pane (takes effect immediately, persists in the
+// transcript); the spec is updated either way so the next resume composes
+// --model correctly. No respawn, no argv surgery.
+func cmdModel(args []string) int {
+	if len(args) < 1 || len(args) > 2 {
+		return fail(errf("usage: muster model <name> [opus|sonnet|haiku|<id>]"))
+	}
+	name := args[0]
+	s, err := loadSpec(name)
+	if err != nil {
+		return fail(errf("no agent %q", name))
+	}
+	if len(args) == 1 {
+		spec := s.Model
+		if spec == "" {
+			spec = "(default)"
+		}
+		live := ""
+		if s.SessionUUID != "" {
+			if u := loadUsage(s.SessionUUID); u != nil && u.Model != "" {
+				live = "  live: " + u.Model
+			}
+		}
+		fmt.Printf("%s  spec: %s%s\n", name, spec, live)
+		return 0
+	}
+	if s.Harness != "claude" {
+		return fail(errf("%s is not a claude agent — no model to set", name))
+	}
+	alias := args[1]
+	s.Model = alias
+	if err := saveSpec(s); err != nil {
+		return fail(err)
+	}
+	if tmuxHasSession(s.TmuxSession) {
+		if err := tmuxSendLine(s.TmuxSession, "/model "+alias); err != nil {
+			return fail(errf("spec updated, but typing /model failed: %v", err))
+		}
+		fmt.Printf("%s → %s (live via /model; spec updated for future resumes)\n", name, alias)
+		return 0
+	}
+	fmt.Printf("%s → %s (dead — takes effect on resume)\n", name, alias)
+	return 0
 }
 
 // cmdQ is the quick-spawn shorthand: auto-names the agent "chat-<hex4>",
@@ -193,23 +290,42 @@ func launch(spec *AgentSpec, resume, noPpz bool, setup string) int {
 			// right submit-key for ppz's subs-alert injection + heartbeat hint
 			env["PPZ_AGENT_HARNESS"] = spec.Harness
 		}
+		if spec.Template != "" {
+			// heartbeat hint: advertises the specialty mesh-wide so a
+			// cross-machine dispatcher can ask "who's a free backend?"
+			env["PPZ_AGENT_SPECIALTY"] = spec.Template
+		}
 		// the wrapped agent must find `ppz` on PATH (subs read, send)
 		env["PATH"] = filepath.Dir(ppzBin()) + ":" + os.Getenv("PATH")
-		// join the project's shared room pipe before the harness starts, so
-		// room traffic reaches this agent via `ppz subs read` / the nudge
-		if proj := projectFor(loadProjects(), lsRow{Dir: spec.Dir, Repo: spec.Repo}); proj != "" {
+		// The room-pipe setup and the source-exists check are independent
+		// ppz subprocesses — run them concurrently instead of serially.
+		// They used to be the dominant muster-side spawn latency (4-5
+		// serialized calls, each with a 10s worst-case timeout).
+		proj := projectFor(loadProjects(), lsRow{Dir: spec.Dir, Repo: spec.Repo})
+		if proj != "" {
 			// heartbeat hint: lets a DIFFERENT machine bucket this agent's
 			// remote sidebar row under the right project by name (paths
 			// differ per machine, so only the name travels).
 			env["PPZ_AGENT_PROJECT"] = proj
+		}
+		roomDone := make(chan struct{})
+		go func() {
+			defer close(roomDone)
+			if proj == "" {
+				return
+			}
+			// join the project's shared room pipe before the harness starts,
+			// so room traffic reaches this agent via `ppz subs read`/the nudge
 			if pipe, err := ensureRoomPipe(proj); err == nil {
 				subscribeRoom(spec.Name, pipe)
 			} else {
 				fmt.Fprintf(os.Stderr, "muster: room pipe: %v (continuing without)\n", err)
 			}
-		}
+		}()
+		sourceExists := ppzSourceExists(spec.PpzHandle)
+		<-roomDone
 		ppzq := shQuote(ppzBin())
-		if ppzSourceExists(spec.PpzHandle) {
+		if sourceExists {
 			// handle survives restarts (keeps inbox history + schedules);
 			// share's bare form reuses it: set current, then share.
 			cmd = ppzq + " set handle " + spec.PpzHandle + " && " + ppzq + " terminal share -- " + inner
@@ -286,6 +402,10 @@ type lsRow struct {
 	Remote  bool    `json:"remote,omitempty"`   // mesh-only: no local spec (other machine)
 	Host    string  `json:"host,omitempty"`     // remote: hostname from its heartbeat
 	Project string  `json:"project,omitempty"`  // remote: project NAME from its heartbeat (no local Dir/Repo to match on)
+
+	Template string `json:"template,omitempty"` // role template this agent was spawned from
+	Spare    bool   `json:"spare,omitempty"`    // warm pool spare, unclaimed
+	Pending  bool   `json:"pending,omitempty"`  // optimistic row: spawn decided, spec not on disk yet
 }
 
 func gatherRows() ([]lsRow, error) {
@@ -294,7 +414,12 @@ func gatherRows() ([]lsRow, error) {
 		return nil, err
 	}
 	hb := ppzWho()
-	return buildRows(specs, hb, ppzInboxDepth(), offlineSourcesExist(hb)), nil
+	rows := buildRows(specs, hb, ppzInboxDepth(), offlineSourcesExist(hb))
+	// optimistic rows: dispatch decided a spawn, the spec isn't on disk yet
+	for _, p := range loadPending(specs) {
+		rows = append(rows, lsRow{Name: p.Name, State: "pending", Pending: true, Cmd: p.Note})
+	}
+	return rows, nil
 }
 
 // buildRows is gatherRows' pure core (no subprocess calls) so it's testable
@@ -312,6 +437,10 @@ func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, inbox map[string]
 			Name: s.Name, Role: s.Role, State: state, Reason: reason, Harness: s.Harness,
 			Dir: s.Dir, Repo: s.Repo, Branch: s.Branch, Tmux: s.TmuxSession, Ppz: s.PpzHandle,
 			Inbox: inbox[s.PpzHandle], Age: fmtAge(s.CreatedAt), Cmd: shJoin(s.Argv),
+			Template: s.Template, Spare: s.Spare,
+		}
+		if r.Model == "" && s.Model != "" {
+			r.Model = s.Model // spec model until the statusline reports the live one
 		}
 		// what's REALLY checked out beats what spawn recorded
 		if lb := liveBranch(s.Dir); lb != "" {
@@ -320,7 +449,10 @@ func buildRows(specs []*AgentSpec, hb map[string]ppzHeartbeat, inbox map[string]
 		r.Wt = s.Worktree != ""
 		if s.SessionUUID != "" {
 			if u := loadUsage(s.SessionUUID); u != nil {
-				r.Model, r.CtxPct, r.FivePct = u.Model, u.CtxPct, u.FiveHrPct
+				if u.Model != "" {
+					r.Model = u.Model // live statusline beats the spec's alias
+				}
+				r.CtxPct, r.FivePct = u.CtxPct, u.FiveHrPct
 				if !u.FiveHrReset.IsZero() {
 					r.FiveEnd = u.FiveHrReset.Local().Format("15:04")
 				}
@@ -372,7 +504,7 @@ func remoteRows(hb map[string]ppzHeartbeat, ours map[string]bool, inbox map[stri
 		rows = append(rows, lsRow{
 			Name: h, State: state, Reason: "heartbeat", Harness: hbEntry.Harness,
 			Ppz: h, Inbox: inbox[h], Model: hbEntry.Model, Remote: true, Host: hbEntry.Host,
-			Project: hbEntry.Project,
+			Project: hbEntry.Project, Template: hbEntry.Specialty,
 		})
 	}
 	return rows

@@ -20,6 +20,9 @@ Design rules, in priority order:
 
 | key | action | scope |
 |-----|--------|-------|
+| ; | **dispatch palette** — type the task first, route it inline: `@agent`/`@template` `!model` `/skill` `#proj`; `- ` bullets under a header fan an epic out to several agents. Live preview shows exactly what enter will do | fleet |
+| F | retask selected agent: /clear + primer + NEW task (the palette opens locked onto it) | selected |
+| m | model menu: opus/sonnet/haiku (live /model + spec for resume; `muster model` for anything else) | selected |
 | j / k, ↓ / ↑ | select next/previous agent | selection |
 | 1–9 | jump to Nth agent in the list | selection |
 | u | jump to whoever needs you most: blocked → stalled → unread | selection |

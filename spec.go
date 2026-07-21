@@ -31,6 +31,18 @@ type AgentSpec struct {
 	TmuxSession string            `json:"tmux_session"`
 	CreatedAt   time.Time         `json:"created_at"`
 	ResumedAt   time.Time         `json:"resumed_at,omitempty"`
+	// Model is first-class launch state, NOT part of the verbatim Argv: a
+	// user --model in the spawn command is adopted here (adoptModel) exactly
+	// like --session-id, and composed back in at every launch/resume. That
+	// makes `muster model <name> opus` a one-line spec edit instead of a
+	// kill-and-retype — the spec is the truth, the flag is derived.
+	Model string `json:"model,omitempty"`
+	// Template names the role template this agent was spawned from
+	// (template.go) — the pool key for dispatch ("give this to any idle
+	// backend"). Spare marks a pre-warmed pool member nobody has claimed
+	// yet: booted, briefed, primed, waiting for its first task.
+	Template string `json:"template,omitempty"`
+	Spare    bool   `json:"spare,omitempty"`
 }
 
 func dataDir() string {
@@ -250,6 +262,31 @@ func teamRoster(self string) string {
 	return strings.Join(parts, ", ")
 }
 
+// identityPrompt is the who-you-are half of the briefing: the mesh briefing
+// (role, roster, handoff contract, room etiquette — or bare conventions for
+// --no-ppz agents) plus the template specialty. Shared by the spawn flags
+// and the /clear hook re-injection, so both always agree and the roster is
+// recomputed fresh at the moment it's needed.
+func identityPrompt(s *AgentSpec) string {
+	// --no-ppz agents get no mesh briefing (nothing mesh-specific applies),
+	// but an opted-in project's conventions aren't mesh-specific and must
+	// still reach them (#12).
+	prompt := conventionsPrompt(s)
+	if s.PpzHandle != "" {
+		prompt = meshBriefing(s) // already folds conventionsPrompt in
+	}
+	// templated agents learn their specialty + go-to skills (template.go)
+	if s.Template != "" {
+		if tb := templateBriefing(findTemplate(s.Template)); tb != "" {
+			if prompt != "" {
+				prompt += " "
+			}
+			prompt += tb
+		}
+	}
+	return prompt
+}
+
 // muster-injected flags, recomputed at every launch — never stored in Argv.
 // firstLaunch gates the system-prompt briefing (team roster + conventions):
 // only the FIRST launch actually needs it — a resumed session's transcript
@@ -267,12 +304,15 @@ func injected(s *AgentSpec, hooksSettings string, firstLaunch bool) []string {
 	if !firstLaunch {
 		return extra
 	}
-	// --no-ppz agents get no mesh briefing (nothing mesh-specific applies),
-	// but an opted-in project's conventions aren't mesh-specific and must
-	// still reach them (#12).
-	prompt := conventionsPrompt(s)
-	if s.PpzHandle != "" {
-		prompt = meshBriefing(s) // already folds conventionsPrompt in
+	prompt := identityPrompt(s)
+	// the context pack (project primer + team lessons, packs.go) seeds every
+	// fresh context regardless of mesh membership — it's a process flag, so
+	// it survives /clear along with the rest of the briefing.
+	if pack := contextPack(s); pack != "" {
+		if prompt != "" {
+			prompt += "\n\n"
+		}
+		prompt += pack
 	}
 	if prompt != "" {
 		extra = append(extra, "--append-system-prompt", prompt)
@@ -281,37 +321,58 @@ func injected(s *AgentSpec, hooksSettings string, firstLaunch bool) []string {
 }
 
 // composeSpawn builds the argv actually executed at first launch.
-// claude: user argv (any user --session-id adopted into the spec first)
-// + our --session-id + injected extras.
+// claude: user argv (any user --session-id/--model adopted into the spec
+// first) + our --session-id/--model + injected extras.
 func composeSpawn(s *AgentSpec, hooksSettings string) []string {
 	if s.Harness != "claude" {
 		return s.Argv
 	}
 	argv := append([]string{}, s.Argv...)
 	argv = append(argv, "--session-id", s.SessionUUID)
+	if s.Model != "" {
+		argv = append(argv, "--model", s.Model)
+	}
 	return append(argv, injected(s, hooksSettings, true)...)
 }
 
 // composeResume builds the argv for a faithful restart: the user's exact
-// argv with the harness resume flag appended. Never reconstructed.
+// argv with the harness resume flag appended. Never reconstructed. The
+// spec's Model is composed back in too — --model on --resume overrides the
+// transcript's model, so a `muster model <name> X` done while the agent was
+// dead takes effect on the next resume.
 func composeResume(s *AgentSpec, hooksSettings string) []string {
 	if s.Harness != "claude" || s.SessionUUID == "" {
 		return s.Argv // verbatim rerun is the honest fallback
 	}
 	argv := append([]string{}, s.Argv...)
 	argv = append(argv, "--resume", s.SessionUUID)
+	if s.Model != "" {
+		argv = append(argv, "--model", s.Model)
+	}
 	return append(argv, injected(s, hooksSettings, false)...)
 }
 
 // adoptSessionID pulls a user-supplied --session-id out of argv into the
 // spec (so resume targets it) and returns argv without the flag.
 func adoptSessionID(argv []string) (string, []string) {
+	return adoptValueFlag(argv, "--session-id")
+}
+
+// adoptModel pulls a user-supplied --model out of argv into the spec — the
+// exact same move as adoptSessionID, for the exact same reason: the model
+// is launch state muster manages (spec.Model, `muster model`), so it must
+// not be frozen inside the verbatim Argv where only a respawn could change it.
+func adoptModel(argv []string) (string, []string) {
+	return adoptValueFlag(argv, "--model")
+}
+
+func adoptValueFlag(argv []string, flag string) (string, []string) {
 	for i, a := range argv {
-		if a == "--session-id" && i+1 < len(argv) {
-			return argv[i+1], stripFlag(argv, "--session-id")
+		if a == flag && i+1 < len(argv) {
+			return argv[i+1], stripFlag(argv, flag)
 		}
-		if strings.HasPrefix(a, "--session-id=") {
-			return strings.TrimPrefix(a, "--session-id="), stripFlag(argv, "--session-id")
+		if strings.HasPrefix(a, flag+"=") {
+			return strings.TrimPrefix(a, flag+"="), stripFlag(argv, flag)
 		}
 	}
 	return "", argv
