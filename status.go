@@ -157,8 +157,13 @@ func cmdStatusLine() int {
 			// absolute context tokens in use (input incl. cache reads/writes —
 			// the numerator behind used_percentage). Lets the refresh trigger
 			// key off real size, not a % that means 150k on a 200k window but
-			// 520k on a 1M one. Absent on older Claude Code / before the first
-			// API call → 0, and the % trigger carries the load (refresh.go).
+			// 520k on a 1M one. Reads 0 (not missing) before the first API
+			// response, and the % trigger carries the load then (refresh.go).
+			// CAVEAT: this means CURRENT context tokens only on Claude Code
+			// >= v2.1.132; BEFORE that it was CUMULATIVE session totals, so on
+			// pre-2.1.132 CC the token ceiling would fire off lifetime usage
+			// and over-refresh. We run current CC; the %-fallback is the
+			// backstop if an old CC ever reports a cumulative number here.
 			TotalInputTokens int64 `json:"total_input_tokens"`
 		} `json:"context_window"`
 		RateLimits struct {

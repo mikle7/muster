@@ -35,7 +35,8 @@ func bootstrapWorkspace() int {
 		args := []string{"new-session", "-d", "-s", wsSession, "-e", "MUSTER_EMBEDDED=1"}
 		for _, k := range []string{"MUSTER_STATE_DIR", "MUSTER_TMUX_ARGS", "MUSTER_TMUX", "MUSTER_PPZ",
 			"MUSTER_DEFAULT_CMD", "MUSTER_SKIP_PERMISSIONS", "MUSTER_REPO_ROOTS", "MUSTER_NOTIFY",
-			"MUSTER_STALL_MIN", "MUSTER_REFRESH_PCT", "MUSTER_PPZ_TIMEOUT_MS", "MUSTER_REFRESH_WAIT_S"} {
+			"MUSTER_STALL_MIN", "MUSTER_REFRESH_PCT", "MUSTER_REFRESH_TOKENS", "MUSTER_PPZ_TIMEOUT_MS",
+			"MUSTER_REFRESH_WAIT_S"} {
 			if v := os.Getenv(k); v != "" {
 				args = append(args, "-e", k+"="+v)
 			}
