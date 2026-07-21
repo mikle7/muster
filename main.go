@@ -16,8 +16,9 @@ const usage = `muster — herd an army of coding agents with tmux + ppz pipes
 
   dispatch "<task…>"      route a task: @agent/@template !model /skill #proj;
                           epics (header + "- " bullets) fan out to several agents
-  retask <name> [--model m] [--spare] [task…]
-                          repurpose an agent: /clear + primer + NEW task (F in the UI)
+  retask <name> [--model m] [--role r] [-C dir | --repo dir -b branch] [--spare] [task…]
+                          repurpose an agent: /clear + primer + NEW task (F in the UI);
+                          -C/--repo also relocates it (new dir + updated ls role/dir)
   model <name> [alias]    show/set an agent's model (live /model + spec for resume)
   template ls|add|rm      role templates: charter+model+skills+pool cap (+--warm spare)
   lesson add <proj> <txt> record a caveat every future fresh context receives
