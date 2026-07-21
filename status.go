@@ -347,8 +347,15 @@ func cmdHook(args []string) int {
 	// task: primer, and pointedly NOT the old handoff (rotated aside by
 	// cmdRetask). Manual (a human typed /clear, no marker) = NEW task:
 	// primer, old handoff parked as .prev. Every mode re-briefs identity.
-	if payload.HookEventName == "SessionStart" && payload.Source == "clear" {
-		emitClearContext(os.Getenv("MUSTER_AGENT"))
+	// source=="compact" is Claude Code's own auto-compaction (context filled)
+	// — same SessionStart injection channel, treated as a refresh (SAME task):
+	// the transcript was just summarized, so re-inject the durable muster
+	// context that summary may have dropped. Without this, a compacted agent —
+	// especially a RESUMED one, which never got the --append-system-prompt
+	// briefing (firstLaunch gate, spec.go) — silently loses its identity/
+	// handoff. muster already received this event and ignored it.
+	if payload.HookEventName == "SessionStart" && (payload.Source == "clear" || payload.Source == "compact") {
+		emitClearContext(os.Getenv("MUSTER_AGENT"), payload.Source)
 	}
 	return 0
 }
@@ -394,10 +401,25 @@ func migrateEvents(old, newID string) {
 
 // emitClearContext prints SessionStart hook JSON injecting seed context
 // into the just-cleared window. Docs cap additionalContext at 10k chars.
-func emitClearContext(agent string) {
-	if b := clearHookJSON(agent, clearMode(agent)); b != nil {
+// source is the SessionStart source: "clear" (a /clear — classify by marker)
+// or "compact" (Claude's own auto-compaction — always SAME task, never
+// consume a retask/refresh marker meant for a real /clear).
+func emitClearContext(agent, source string) {
+	if b := clearHookJSON(agent, clearModeForSource(agent, source)); b != nil {
 		fmt.Println(string(b))
 	}
+}
+
+// clearModeForSource picks the injection mode for a SessionStart source.
+// "compact" is Claude's own auto-compaction — always SAME task, and it must
+// NOT run clearMode (that consumes a one-shot retask marker set aside for a
+// real /clear; a compaction firing first would eat it and the next actual
+// retask would wake up thinking it's just a refresh).
+func clearModeForSource(agent, source string) string {
+	if source == "compact" {
+		return "compact"
+	}
+	return clearMode(agent)
 }
 
 // clearMode classifies a /clear by who initiated it: a retask mark
@@ -451,6 +473,13 @@ func clearHookJSON(agent, mode string) []byte {
 	case "refresh":
 		ctx = "Your context was just cleared (muster context refresh). You are the same agent on the " +
 			"SAME task — your handoff notes below are the thread; continue from them."
+	case "compact":
+		// Claude auto-compacted the transcript (context filled). SAME task: its
+		// summary is live; re-inject the durable context that summary may have
+		// dropped. Handoff notes injected below, same as refresh.
+		ctx = "Your conversation was just auto-compacted by Claude Code (context filled up). You are the " +
+			"same agent on the SAME task — Claude's summary is in play; your durable muster context is " +
+			"re-injected below so nothing important was silently dropped. Continue the task."
 	default:
 		// manual: a human typed /clear — fresh start, old handoff parked
 		// (kept, never destroyed) so it can't drag the new task backwards.
@@ -468,7 +497,10 @@ func clearHookJSON(agent, mode string) []byte {
 	if identity != "" {
 		ctx += "\n\nYOUR BRIEFING (re-injected — the roster is current):\n" + identity
 	}
-	if mode == "refresh" {
+	// refresh + compact are SAME-task: the handoff notes are the thread.
+	// retask + manual are NEW-task: seed the project primer instead.
+	sameTask := mode == "refresh" || mode == "compact"
+	if sameTask {
 		const capChars = 4500
 		b, _ := os.ReadFile(handoffPath(agent))
 		notes := strings.TrimSpace(string(b))
@@ -478,7 +510,7 @@ func clearHookJSON(agent, mode string) []byte {
 		if len(notes) > capChars {
 			notes = "…" + notes[len(notes)-capChars:]
 		}
-		ctx += "\n\nYOUR HANDOFF NOTES from before the clear:\n" + notes
+		ctx += "\n\nYOUR HANDOFF NOTES (your durable thread):\n" + notes
 	} else if primer != "" {
 		// retask + manual seed the project, not the old task
 		ctx += "\n\nPROJECT PRIMER:\n" + primer
@@ -486,7 +518,7 @@ func clearHookJSON(agent, mode string) []byte {
 	if lessons != "" {
 		ctx += "\n\nLESSONS LEARNED here by the team:\n" + lessons
 	}
-	if mode == "refresh" {
+	if sameTask {
 		ctx += "\n\nContinue from your notes and keep the handoff file updated as you work."
 	} else {
 		ctx += "\n\nStart a fresh handoff file as you work."
