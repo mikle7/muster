@@ -516,14 +516,22 @@ func clearHookJSON(agent, mode string) []byte {
 	if sameTask {
 		const capChars = 4500
 		b, _ := os.ReadFile(handoffPath(agent))
-		notes := strings.TrimSpace(string(b))
+		// inject ONLY the live resume section (above the log marker), not the
+		// whole accumulated file — history below the marker is the agent's log,
+		// not resume state. Markerless (old) handoffs fall back to the whole
+		// file, tail-capped, exactly as before.
+		notes, ok := handoffResume(string(b))
+		if !ok {
+			notes = strings.TrimSpace(string(b))
+		}
 		if notes == "" {
 			notes = "(handoff file is empty — reconstruct from the repo: git log, git diff, docs, your inbox.)"
 		}
-		if len(notes) > capChars {
-			notes = "…" + notes[len(notes)-capChars:]
-		}
+		notes = capTail(notes, capChars) // rune-safe (packs.go)
 		ctx += "\n\nYOUR HANDOFF NOTES (your durable thread):\n" + notes
+		// bound the append-only history so the file can't re-bloat over a
+		// long-lived agent's many clears. Resume section is left intact.
+		pruneHandoff(agent)
 	} else if primer != "" {
 		// retask + manual seed the project, not the old task
 		ctx += "\n\nPROJECT PRIMER:\n" + primer

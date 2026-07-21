@@ -204,9 +204,12 @@ func meshBriefing(s *AgentSpec) string {
 		"replying to senders by name. A message starting with STANDUP means: reply to its sender in under " +
 		"5 lines with your current task, progress, blockers, and what's next." +
 		" CONTEXT HANDOFF: maintain " + handoffPath(s.Name) + " as a rolling markdown handoff — current " +
-		"task, state, key decisions, file paths, exact next steps. Update it after every significant step, " +
-		"not just when asked: when your context is cleared (muster does this at high context usage), that " +
-		"file is automatically re-injected and is ALL your future self gets. Write it to resume cold."
+		"task, state, key decisions, file paths, exact next steps. It is pre-seeded with a '## Resume state' " +
+		"section on top and a '" + handoffLogMarker + "' marker: keep the live resume state ABOVE the marker " +
+		"(only that is re-injected when your context clears — keep it tight and current), and append any " +
+		"running log/history BELOW it (auto-pruned, never re-injected). Update the resume section after every " +
+		"significant step, not just when asked: when your context is cleared (muster does this at high context " +
+		"usage), the resume section is ALL your future self gets. Write it to resume cold."
 	ps := loadProjects()
 	if proj := projectFor(ps, lsRow{Dir: s.Dir, Repo: s.Repo}); proj != "" {
 		pipe := roomPipe(proj)

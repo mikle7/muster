@@ -370,6 +370,13 @@ func launch(spec *AgentSpec, resume, noPpz bool, setup string) int {
 		_ = tmuxKillSession(spec.TmuxSession)
 		return fail(err)
 	}
+	// seed the handoff skeleton (resume section + log marker) on a fresh
+	// launch so its structure exists by default — resume keeps the agent's
+	// existing notes untouched. Claude-only: only claude agents get the
+	// clear-not-compact re-injection this structure serves.
+	if !resume && spec.Harness == "claude" {
+		seedHandoffTemplate(spec.Name)
+	}
 	mesh := "no mesh"
 	if usePpz {
 		mesh = "ppz:" + spec.PpzHandle
