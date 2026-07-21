@@ -10,12 +10,22 @@ package main
 // The SessionStart hook sees the retask marker and injects the project
 // primer + latest lessons instead of the (now irrelevant) old handoff —
 // the new task must not start life buried in the previous task's notes.
+//
+// A NEW task often belongs in a NEW place too (the old worktree was the old
+// task's). `-C dir` / `--repo dir -b branch` relocate the agent as part of
+// the same reset. A running claude's cwd is fixed at exec — you cannot cd it
+// — so relocation kills the pane and relaunches in the new dir with a fresh
+// session id, which IS the fresh context retask wants; the full briefing
+// (identity, primer, room, conventions) is recomputed from the updated spec,
+// so `muster ls`/recap and the sidebar stop showing the stale old-task dir
+// and role. Without a location flag, the fast in-place /clear path is unchanged.
 
 import (
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -69,8 +79,12 @@ func cmdRetask(args []string) int {
 	fs := flag.NewFlagSet("retask", flag.ExitOnError)
 	model := fs.String("model", "", "switch model for the new task (opus|sonnet|haiku|id)")
 	spare := fs.Bool("spare", false, "mark the reset agent a claimable warm spare (auto-reset sweep)")
+	dir := fs.String("C", "", "relocate: point the agent at this existing directory (e.g. the main checkout)")
+	repo := fs.String("repo", "", "relocate: create a fresh worktree of this repo (with -b)")
+	branch := fs.String("b", "", "branch/worktree name (with --repo)")
+	role := fs.String("role", "", "update the agent's charter/role (shown in ls, re-briefed to it and teammates)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: muster retask <name> [--model m] [--spare] [task text…]")
+		fmt.Fprintln(os.Stderr, "usage: muster retask <name> [--model m] [--role r] [-C dir | --repo dir -b branch] [--spare] [task text…]")
 	}
 	if len(args) < 1 {
 		fs.Usage()
@@ -79,6 +93,12 @@ func cmdRetask(args []string) int {
 	name := args[0]
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
+	}
+	if (*repo == "") != (*branch == "") {
+		return fail(errf("--repo and -b go together"))
+	}
+	if *dir != "" && *repo != "" {
+		return fail(errf("-C and --repo are mutually exclusive"))
 	}
 	task := joinWords(fs.Args())
 	s, err := loadSpec(name)
@@ -100,9 +120,10 @@ func cmdRetask(args []string) int {
 	defer clearRefreshMark(name)
 
 	oldID := s.SessionUUID
-	// a busy agent finishes its current turn first — /clear typed mid-turn
-	// would queue unpredictably. Dispatch only routes to idle agents, so
-	// this wait is usually zero; a manual retask on a working agent waits.
+	// a busy agent finishes its current turn first — clearing/killing it
+	// mid-turn would lose or queue work unpredictably. Dispatch only routes
+	// to idle agents, so this wait is usually zero; a manual retask on a
+	// working agent waits.
 	if st := loadStatus(oldID); st != nil && st.State == "working" {
 		fmt.Printf("retask %s: waiting for the current turn to finish (up to %s)…\n", name, refreshWait())
 		idle := func() bool {
@@ -110,7 +131,7 @@ func cmdRetask(args []string) int {
 			return st == nil || st.State != "working"
 		}
 		if !waitFor(idle, refreshWait(), 2*time.Second) {
-			return fail(errf("%s never went idle — retask aborted before /clear, nothing lost", name))
+			return fail(errf("%s never went idle — retask aborted, nothing lost", name))
 		}
 	}
 
@@ -119,6 +140,23 @@ func cmdRetask(args []string) int {
 	hp := handoffPath(name)
 	if _, err := os.Stat(hp); err == nil {
 		_ = os.Rename(hp, hp+".prev")
+	}
+	if *role != "" {
+		s.Role = *role
+	}
+
+	// Relocating? A running claude can't be moved, so kill+relaunch in the new
+	// dir with a fresh session — the clean break retask already wants, and the
+	// only thing that actually updates the pane's cwd AND the tracked spec.Dir.
+	if *dir != "" || *repo != "" {
+		return retaskRelocate(s, oldID, *dir, *repo, *branch, *model, *spare, task)
+	}
+
+	// ---- in-place path: fresh context via /clear, same location ----
+	if *role != "" {
+		// the /clear hook reloads the spec and re-briefs identity, so saving
+		// the new role now is all it takes for the reset to announce it.
+		_ = saveSpec(s)
 	}
 
 	setRetaskMark(name, task)
@@ -167,6 +205,91 @@ func cmdRetask(args []string) int {
 		fmt.Printf("%s retasked: fresh seeded context, task delivered\n", name)
 	} else {
 		fmt.Printf("%s retasked: fresh seeded context, waiting for a task\n", name)
+	}
+	return 0
+}
+
+// applyRetaskDir resolves a relocation into s, mutating Dir/Repo/Worktree/
+// Branch in place and returning any worktree setup script to run in the pane.
+// Mirrors cmdSpawn's dir precedence exactly: --repo/-b makes a fresh worktree;
+// -C points at an existing dir and drops the muster-worktree fields (the agent
+// is no longer in a managed worktree unless dir happens to be inside one).
+// Pure enough to unit-test against a temp repo — no tmux, no launch.
+func applyRetaskDir(s *AgentSpec, dir, repo, branch string) (setup string, err error) {
+	switch {
+	case repo != "":
+		wt, fb, werr := worktreeAdd(repo, branch)
+		if werr != nil {
+			return "", werr
+		}
+		abs, _ := filepath.Abs(repo)
+		s.Repo, s.Worktree, s.Branch, s.Dir = abs, wt, fb, wt
+		_, _ = addProject(abs, "") // idempotent: repos you retask into show up in the UI
+		return setupScript(abs), nil
+	default: // -C dir
+		abs, aerr := filepath.Abs(dir)
+		if aerr != nil {
+			return "", aerr
+		}
+		if fi, serr := os.Stat(abs); serr != nil || !fi.IsDir() {
+			return "", errf("-C %s: not a directory", dir)
+		}
+		s.Dir, s.Repo, s.Worktree, s.Branch = abs, "", "", ""
+		if root := worktreeRepoRoot(abs); root != "" {
+			s.Repo = root
+			_, _ = addProject(root, "")
+		}
+		return "", nil
+	}
+}
+
+// retaskRelocate kills the agent's pane and relaunches it in a new working
+// directory with a fresh session — the only way to actually move a claude,
+// which carries its cwd from exec. The full first-launch briefing is
+// recomputed from the (now updated) spec, so identity/primer/room/conventions
+// and the tracked dir+role all match the new location. The task is delivered
+// once the fresh session's hook signals it has booted (muster deliver).
+func retaskRelocate(s *AgentSpec, oldID, dir, repo, branch, model string, spare bool, task string) int {
+	name := s.Name
+	oldWt := s.Worktree
+	noPpz := s.PpzHandle == "" // preserve mesh membership as it was
+
+	setup, err := applyRetaskDir(s, dir, repo, branch)
+	if err != nil {
+		return fail(err)
+	}
+	if repo != "" {
+		fmt.Printf("worktree %s (branch %s)\n", s.Worktree, s.Branch)
+	}
+	if model != "" {
+		s.Model = model
+	}
+	s.Spare = spare
+	s.SessionUUID = newUUID() // fresh context: a clean transcript in the new place
+	s.ResumedAt = time.Now()
+
+	// abandon the old session's status/events/usage — new task, clean break.
+	if oldID != "" {
+		clearStatus(oldID)
+		clearEvents(oldID)
+		_ = os.Remove(usagePath(oldID))
+	}
+
+	if err := tmuxKillSession(s.TmuxSession); err != nil {
+		return fail(err)
+	}
+	if rc := launch(s, false, noPpz, setup); rc != 0 {
+		return rc
+	}
+	if oldWt != "" && oldWt != s.Dir {
+		fmt.Printf("note: previous worktree %s left untouched — clean it up by hand once you're sure the old work is safe\n", collapseHome(oldWt))
+	}
+	if task != "" {
+		// deliver waits for the fresh session's SessionStart hook, then types.
+		_ = exec.Command(selfExe(), "deliver", name, task).Start()
+		fmt.Printf("%s retasked → %s: fresh context, task delivering when it boots\n", name, collapseHome(s.Dir))
+	} else {
+		fmt.Printf("%s retasked → %s: fresh context, waiting for a task\n", name, collapseHome(s.Dir))
 	}
 	return 0
 }
