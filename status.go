@@ -354,6 +354,13 @@ func cmdHook(args []string) int {
 	if ev := eventForTransition(resolveAgentName(payload.SessionID), prev, st); ev != nil {
 		_ = publishEvent(*ev)
 	}
+	// on turn-end (idle), prune any self-added subscription to the control
+	// handle's inbox — a steady-state token-burn multiplier (pruneCtlSubscription).
+	// Throttled + short-timeout so a per-turn hook stays cheap; catches a
+	// looping agent (which keeps hitting idle) that SessionStart alone misses.
+	if state == "idle" {
+		pruneCtlSubscription(os.Getenv("MUSTER_AGENT"))
+	}
 	// a fresh post-/clear context gets seeded — stdout from a SessionStart
 	// hook is injected as context (docs: hookSpecificOutput.
 	// additionalContext). Refresh = same task: handoff notes. Retask = NEW
